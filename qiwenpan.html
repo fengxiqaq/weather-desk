@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1720">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="气温盘">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>气温盘 Weather Desk</title>
+<style>
+/* 布局：顶部状态条 + 底部三个标签（总览 / 城市 / 记录），手机单列，宽屏两列 */
+:root{
+  --bg:#f4f6f8; --panel:#ffffff; --panel2:#eef2f5; --line:#d9e0e6;
+  --fg:#15202b; --muted:#5f6f7d; --accent:#0b6fb8; --accent-soft:#e1effa;
+  --yes:#0f8a5f; --yes-soft:#e2f4ec; --no:#c2410c; --no-soft:#fbeadf;
+  --warn:#a16207; --warn-soft:#fdf3d7; --bad:#b91c1c;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC","Segoe UI",Roboto,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0f1720; --panel:#16212c; --panel2:#1c2935; --line:#2a3a48;
+  --fg:#e6edf3; --muted:#93a4b3; --accent:#4fa8e8; --accent-soft:#16324a;
+  --yes:#34c58f; --yes-soft:#123628; --no:#f0864f; --no-soft:#3a2216;
+  --warn:#e3b341; --warn-soft:#352b10; --bad:#f87171; color-scheme:dark;
+}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 var(--sans);-webkit-text-size-adjust:100%}
+body{padding:env(safe-area-inset-top,0) 0 calc(64px + env(safe-area-inset-bottom,0))}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+a{color:var(--accent)}
+.wrap{max-width:1100px;margin:0 auto;padding-inline:max(14px,env(safe-area-inset-left,0)) max(14px,env(safe-area-inset-right,0))}
+header.top{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line)}
+header.top .wrap{display:flex;align-items:center;gap:10px;padding-block:10px;flex-wrap:wrap}
+.brand{font-weight:700;font-size:17px;letter-spacing:.02em}
+.clock{font:600 15px var(--mono);font-variant-numeric:tabular-nums}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.chip{font-size:12px;padding:2px 8px;border-radius:999px;background:var(--panel2);color:var(--muted);white-space:nowrap}
+.chip.ok{background:var(--yes-soft);color:var(--yes)} .chip.err{background:var(--no-soft);color:var(--no)}
+main{padding-block:12px}
+nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:30;background:var(--panel);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0)}
+nav.tabs .wrap{display:grid;grid-template-columns:repeat(3,1fr)}
+nav.tabs button{background:none;border:0;padding:12px 4px;font-size:15px;color:var(--muted)}
+nav.tabs button[aria-current="true"]{color:var(--accent);font-weight:700}
+h2{font-size:16px;margin:4px 0 10px}
+h3{font-size:14px;margin:0 0 8px;color:var(--muted);font-weight:600;letter-spacing:.03em}
+.muted{color:var(--muted)} .small{font-size:12px}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.grid-cities{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+.city{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%}
+.city .row1{display:flex;align-items:baseline;gap:8px}
+.city .name{font-weight:700;font-size:16px}
+.city .temp{margin-left:auto;font:700 26px var(--mono)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:13px}
+.kv dt{color:var(--muted)} .kv dd{margin:0}
+.fav{font-size:13px;display:flex;gap:6px;flex-wrap:wrap}
+.pill{display:inline-block;font-size:12px;padding:1px 7px;border-radius:6px;background:var(--panel2);white-space:nowrap}
+.pill.yes{background:var(--yes-soft);color:var(--yes)} .pill.no{background:var(--no-soft);color:var(--no)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)} .pill.acc{background:var(--accent-soft);color:var(--accent)}
+.pill.dead{text-decoration:line-through;opacity:.7}
+.seg{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px}
+.seg button{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:14px}
+.seg button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+.two{display:grid;gap:12px}
+@media(min-width:860px){.two{grid-template-columns:minmax(0,1fr) minmax(0,1.25fr)}}
+.chart{width:100%;height:auto;display:block}
+.tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{font-size:12px;color:var(--muted);font-weight:600}
+td .sub{display:block;font-size:11px;color:var(--muted)}
+.btn{border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:5px 9px;font-size:13px}
+.btn.yes{background:var(--yes-soft);color:var(--yes);border-color:transparent;font-weight:600}
+.btn.no{background:var(--no-soft);color:var(--no);border-color:transparent;font-weight:600}
+.btn.pri{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn:focus-visible,nav.tabs button:focus-visible,.seg button:focus-visible,.city:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wchip{display:inline-block;font-size:11px;padding:0 5px;border-radius:4px;background:var(--warn-soft);color:var(--warn);margin-top:2px}
+.note{font-size:13px;color:var(--muted);background:var(--panel2);border-radius:8px;padding:8px 10px}
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-bottom:12px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.stat b{display:block;font:700 20px var(--mono)}
+.stat span{font-size:12px;color:var(--muted)}
+.pos{color:var(--yes)} .neg{color:var(--no)}
+.sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;display:flex;align-items:flex-end;justify-content:center}
+.sheet{background:var(--panel);width:100%;max-width:520px;border-radius:16px 16px 0 0;padding:16px max(16px,env(safe-area-inset-right,0)) calc(16px + env(safe-area-inset-bottom,0)) max(16px,env(safe-area-inset-left,0));max-height:90vh;overflow:auto}
+@media(min-width:700px){.sheet-bg{align-items:center}.sheet{border-radius:16px}}
+.sheet .line{display:flex;justify-content:space-between;gap:10px;padding:4px 0;font-size:14px}
+.field{display:flex;flex-direction:column;gap:4px;margin:8px 0}
+.field input,.field textarea,.field select{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px}
+.actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(76px + env(safe-area-inset-bottom,0));background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:999px;font-size:14px;z-index:60}
+.empty{padding:24px;text-align:center;color:var(--muted)}
+.feed{display:flex;flex-direction:column;gap:6px;font-size:13px}
+.feed div{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <span class="brand">气温盘</span>
+  <span class="clock" id="clock">--:--:--</span><span class="small muted">北京时间</span>
+  <div class="chips" id="status"></div>
+</div></header>
+
+<main class="wrap">
+  <section id="view-overview"></section>
+  <section id="view-city" hidden></section>
+  <section id="view-journal" hidden></section>
+</main>
+
+<nav class="tabs"><div class="wrap">
+  <button id="tab-overview" data-view="overview" aria-current="true">总览</button>
+  <button id="tab-city" data-view="city">城市</button>
+  <button id="tab-journal" data-view="journal">纸面记录</button>
+</div></nav>
+
+<div id="sheet-root"></div>
+
+<script>
+"use strict";
+/* ===================== 配置 ===================== */
+const CITIES = [
+  {key:"Shanghai", zh:"上海", slug:"shanghai", icao:"ZSPD", apt:"浦东机场"},
+  {key:"Beijing", zh:"北京", slug:"beijing", icao:"ZBAA", apt:"首都机场"},
+  {key:"Guangzhou", zh:"广州", slug:"guangzhou", icao:"ZGGG", apt:"白云机场"},
+  {key:"Shenzhen", zh:"深圳", slug:"shenzhen", icao:"ZGSZ", apt:"宝安机场"},
+  {key:"Chengdu", zh:"成都", slug:"chengdu", icao:"ZUUU", apt:"双流机场"},
+  {key:"Chongqing", zh:"重庆", slug:"chongqing", icao:"ZUCK", apt:"江北机场"},
+  {key:"Wuhan", zh:"武汉", slug:"wuhan", icao:"ZHHH", apt:"天河机场"},
+  {key:"Qingdao", zh:"青岛", slug:"qingdao", icao:"ZSQD", apt:"胶东机场"},
+];
+const WINDY = "0x164cb85e1718d0a8f95d588b08fbb52b34233e39";
+const GAMMA = "https://gamma-api.polymarket.com";
+const CLOB = "https://clob.polymarket.com";
+const DATA = "https://data-api.polymarket.com/v2";
+const IEM = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py";
+const DEFAULT_FEE = 0.05;              // 天气类吃单费率：每份 fee = rate × p × (1−p)
+const MONTHS = ["january","february","march","april","may","june","july","august","september","october","november","december"];
+const KINDS = [
+  {id:"hi0", kind:"highest", off:0, label:"今日最高温"},
+  {id:"lo0", kind:"lowest", off:0, label:"今日最低温"},
+  {id:"lo1", kind:"lowest", off:1, label:"明日最低温"},
+  {id:"hi1", kind:"highest", off:1, label:"明日最高温"},
+];
+
+/* ===================== 工具 ===================== */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmtP = p => p == null || isNaN(p) ? "—" : (p * 100).toFixed(p < 0.1 || p > 0.9 ? 1 : 0) + "¢";
+const fmtUsd = (v, sign) => v == null || isNaN(v) ? "—" : (sign && v > 0 ? "+" : "") + (v < 0 ? "-$" : "$") + Math.abs(v).toFixed(2);
+const pct = (v, sign) => v == null || isNaN(v) ? "—" : (sign && v > 0 ? "+" : "") + (v * 100).toFixed(1) + "%";
+function bj(ts = Date.now()) { const d = new Date(ts + 8 * 3600e3); return {y:d.getUTCFullYear(), m:d.getUTCMonth()+1, d:d.getUTCDate(), h:d.getUTCHours(), mi:d.getUTCMinutes(), s:d.getUTCSeconds()}; }
+function bjDate(off = 0) { const t = bj(Date.now() + off * 86400e3); return {y:t.y, m:t.m, d:t.d, iso:`${t.y}-${String(t.m).padStart(2,"0")}-${String(t.d).padStart(2,"0")}`}; }
+const dayStartTs = iso => Date.UTC(+iso.slice(0,4), +iso.slice(5,7)-1, +iso.slice(8,10)) - 8 * 3600e3;
+const hhmm = ts => { const t = bj(ts); return String(t.h).padStart(2,"0") + ":" + String(t.mi).padStart(2,"0"); };
+const ago = ts => { if (!ts) return "—"; const s = Math.max(0, Math.round((Date.now() - ts) / 1000)); return s < 60 ? s + " 秒前" : s < 3600 ? Math.round(s/60) + " 分钟前" : Math.round(s/3600) + " 小时前"; };
+const slugOf = (kind, city, date) => `${kind}-temperature-in-${city.slug}-on-${MONTHS[date.m-1]}-${date.d}-${date.y}`;
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch { return false; } },
+};
+async function getJSON(url, opt) {
+  const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 15000);
+  try { const r = await fetch(url, {...opt, signal: ctl.signal}); if (!r.ok) throw new Error("HTTP " + r.status); return await r.json(); }
+  finally { clearTimeout(t); }
+}
+function toast(msg) { const el = document.createElement("div"); el.className = "toast"; el.textContent = msg; document.body.appendChild(el); setTimeout(() => el.remove(), 2200); }
+
+/* ===================== 状态 ===================== */
+const S = {
+  view: "overview", city: store.get("wd.city", "Shanghai"), kindId: store.get("wd.kind", "hi0"),
+  metar: {}, metarTs: 0, metarErr: null,
+  events: {}, eventsTs: 0, eventsErr: null,          // key: kind|city|iso -> {slug, buckets[]}
+  books: {}, booksTs: 0, booksErr: null,             // token -> {bids, asks}
+  windy: [], windyTs: 0, windyErr: null,
+  trades: store.get("wd.trades.v1", []),
+  settings: store.get("wd.settings.v1", {stake: 10}),
+};
+const saveTrades = () => { if (!store.set("wd.trades.v1", S.trades)) toast("本机存储不可用，记录不会保存"); };
+/* 存储自检：从“下载”直接打开的文件，部分安卓浏览器不给本地存储 */
+S.storageOK = (() => { try { localStorage.setItem("wd.probe", "1"); const ok = localStorage.getItem("wd.probe") === "1"; localStorage.removeItem("wd.probe"); return ok; } catch { return false; } })();
+
+/* ===================== 机场报文（IEM，与结算同源 METAR） ===================== */
+/* 主数据源：IEM 单站当日观测（含原始报文，CDN 缓存 ≤10 分钟）；失败时退回批量接口 */
+const obsCache = {};                      // icao|iso -> [{ts,t,raw}]（昨天的只拉一次）
+function parseRaw(raw, ts) {
+  if (!raw || /^SPECI/.test(raw)) return null;
+  const m = (" " + raw + " ").match(/ (M?\d{2})\/(M?\d{2}|\/\/)? /);
+  return m ? {ts, t: parseInt(m[1].replace("M", "-"), 10), raw} : null;
+}
+async function obHistory(icao, iso, fresh) {
+  const key = icao + "|" + iso;
+  if (!fresh && obsCache[key]) return obsCache[key];
+  const bust = fresh ? "&_=" + Math.floor(Date.now() / 120e3) : "";
+  const j = await getJSON(`https://mesonet.agron.iastate.edu/api/1/obhistory.json?station=${icao}&network=CN__ASOS&date=${iso}&full=1${bust}`);
+  const rows = (j.data || []).map(r => parseRaw(r.raw, Date.parse(r.utc_valid))).filter(Boolean).sort((a, b) => a.ts - b.ts);
+  obsCache[key] = rows; return rows;
+}
+async function loadMetar() {
+  const today = bjDate(0).iso, yday = bjDate(-1).iso;
+  try {
+    const by = {};
+    await Promise.all(CITIES.map(async c => {
+      const [a, b] = await Promise.all([obHistory(c.icao, yday, false), obHistory(c.icao, today, true)]);
+      by[c.icao] = b.concat(a).sort((x, y) => x.ts - y.ts);
+    }));
+    S.metar = by; S.metarTs = Date.now(); S.metarErr = null; render(); return;
+  } catch (e) { /* 退回批量接口 */ }
+  try {
+    const qs = CITIES.map(c => "station=" + c.icao).join("&");
+    const url = `${IEM}?${qs}&data=tmpc&data=metar&hours=60&tz=UTC&format=onlycomma&latlon=no&missing=M&report_type=3&report_type=4`;
+    const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 20000);
+    const r = await fetch(url, {signal: ctl.signal}); clearTimeout(tm);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const lines = (await r.text()).trim().split("\n").slice(1);
+    const by = {};
+    for (const ln of lines) {
+      const [st, valid, , raw] = ln.split(",");
+      if (!raw || /^SPECI/.test(raw)) continue;
+      const m = (" " + raw + " ").match(/ (M?\d{2})\/(M?\d{2}|\/\/)? /);
+      if (!m) continue;
+      const ts = Date.parse(valid.replace(" ", "T") + ":00Z");
+      (by[st] ||= []).push({ts, t: parseInt(m[1].replace("M", "-"), 10), raw});
+    }
+    for (const k in by) by[k].sort((a, b) => a.ts - b.ts);
+    S.metar = by; S.metarTs = Date.now(); S.metarErr = null;
+  } catch (e) { S.metarErr = "机场报文获取失败"; }
+  render();
+}
+function dayObs(city, iso) {
+  const a = dayStartTs(iso), b = a + 86400e3;
+  return (S.metar[city.icao] || []).filter(o => o.ts >= a && o.ts < b);
+}
+function wx(city, iso) {
+  const obs = dayObs(city, iso);
+  if (!obs.length) return null;
+  const last = obs[obs.length - 1];
+  let hi = obs[0], lo = obs[0];
+  for (const o of obs) { if (o.t > hi.t) hi = o; if (o.t < lo.t) lo = o; }
+  const prev = obs.length > 1 ? obs[obs.length - 2] : null;
+  return {obs, last, hi, lo, trend: prev ? last.t - prev.t : 0};
+}
+
+/* ===================== Polymarket 市场 ===================== */
+function parseBucket(title) {
+  const m = String(title || "").match(/(-?\d+)°C(?: or (higher|below))?/);
+  return m ? {deg: +m[1], tail: m[2] || ""} : null;
+}
+async function loadEvent(kind, city, off) {
+  const date = bjDate(off);
+  const key = `${kind}|${city.key}|${date.iso}`;
+  const slug = slugOf(kind, city, date);
+  const arr = await getJSON(`${GAMMA}/events?slug=${slug}`);
+  if (!arr || !arr.length) { S.events[key] = {slug, missing: true, date: date.iso}; return; }
+  const e = arr[0];
+  const buckets = [];
+  for (const m of e.markets || []) {
+    const b = parseBucket(m.groupItemTitle); if (!b) continue;
+    let toks = []; try { toks = JSON.parse(m.clobTokenIds); } catch {}
+    let px = []; try { px = JSON.parse(m.outcomePrices).map(Number); } catch {}
+    buckets.push({...b, title: m.groupItemTitle, cond: (m.conditionId || "").toLowerCase(), yes: toks[0], no: toks[1],
+      bestBid: m.bestBid, bestAsk: m.bestAsk, last: m.lastTradePrice, closed: !!m.closed, settle: px,
+      fee: (m.feeSchedule && m.feeSchedule.rate != null) ? m.feeSchedule.rate : DEFAULT_FEE});
+  }
+  buckets.sort((a, b) => (a.tail === "below" ? -1e3 : a.tail === "higher" ? 1e3 : 0) + a.deg - ((b.tail === "below" ? -1e3 : b.tail === "higher" ? 1e3 : 0) + b.deg));
+  S.events[key] = {slug: e.slug, date: date.iso, kind, city: city.key, closed: !!e.closed, buckets};
+}
+async function loadEvents() {
+  try {
+    const jobs = [];
+    for (const c of CITIES) for (const k of KINDS) {
+      if (!(c.key === S.city || k.id === "hi0")) continue;      // 总览只需各城市今日最高温；当前城市拉全部 4 个市场
+      jobs.push(loadEvent(k.kind, c, k.off));
+    }
+    await Promise.all(jobs);
+    S.eventsTs = Date.now(); S.eventsErr = null;
+  } catch (e) { S.eventsErr = "Polymarket 连接失败（检查 VPN）"; }
+  render();
+}
+const evOf = (kindId, cityKey) => { const k = KINDS.find(x => x.id === kindId); return S.events[`${k.kind}|${cityKey}|${bjDate(k.off).iso}`]; };
+
+/* 实时盘口：批量拉取当前城市当前页签所有档位的 Yes / No 盘口 */
+async function loadBooks() {
+  const ev = evOf(S.kindId, S.city);
+  if (!ev || ev.missing || !ev.buckets) return;
+  const toks = ev.buckets.flatMap(b => [b.yes, b.no]).filter(Boolean);
+  if (!toks.length) return;
+  try {
+    const res = await getJSON(`${CLOB}/books`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(toks.map(t => ({token_id: t})))});
+    for (const b of res || []) {
+      S.books[b.asset_id] = {bids: (b.bids || []).map(x => ({p: +x.price, s: +x.size})), asks: (b.asks || []).map(x => ({p: +x.price, s: +x.size}))};
+    }
+    S.booksTs = Date.now(); S.booksErr = null;
+  } catch (e) { S.booksErr = "盘口获取失败（检查 VPN）"; }
+  if (S.view === "city") renderCity();
+  renderStatus();
+}
+/* 合成可成交梯子：买 Yes = Yes 卖单 ∪ (1 − No 买单)；买 No 同理（互补撮合） */
+function ladder(b, side, dir) {
+  const own = S.books[side === "Yes" ? b.yes : b.no], opp = S.books[side === "Yes" ? b.no : b.yes];
+  if (!own && !opp) return null;
+  const lv = new Map();
+  const add = (p, s) => { p = Math.round(p * 1000) / 1000; if (p > 0 && p < 1 && s > 0) lv.set(p, (lv.get(p) || 0) + s); };
+  if (dir === "buy") { (own?.asks || []).forEach(x => add(x.p, x.s)); (opp?.bids || []).forEach(x => add(1 - x.p, x.s)); }
+  else { (own?.bids || []).forEach(x => add(x.p, x.s)); (opp?.asks || []).forEach(x => add(1 - x.p, x.s)); }
+  const arr = [...lv].map(([p, s]) => ({p, s}));
+  arr.sort((a, c) => dir === "buy" ? a.p - c.p : c.p - a.p);
+  return arr;
+}
+/* 按金额（买）或份额（卖）逐档吃单 */
+function walk(lad, amount, mode) {
+  let left = amount, sh = 0, usd = 0;
+  for (const l of lad || []) {
+    if (left <= 1e-9) break;
+    if (mode === "usd") { const cost = l.p * l.s; const take = Math.min(cost, left); sh += take / l.p; usd += take; left -= take; }
+    else { const take = Math.min(l.s, left); sh += take; usd += take * l.p; left -= take; }
+  }
+  return {shares: sh, usd, avg: sh ? usd / sh : null, filled: left <= 1e-6};
+}
+
+/* ===================== windy-weather 动态 ===================== */
+async function loadWindy() {
+  try {
+    const start = Math.floor(dayStartTs(bjDate(-1).iso) / 1000);
+    const j = await getJSON(`${DATA}/activity?user=${WINDY}&type=TRADE&limit=500&start=${start}`);
+    S.windy = (j.data || []).map(a => ({ts: a.timestamp * 1000, side: a.side, out: a.outcome, price: a.price, size: a.size, usd: a.usdc_size, cond: (a.condition_id || "").toLowerCase(), title: a.title}));
+    S.windyTs = Date.now(); S.windyErr = null;
+  } catch (e) { S.windyErr = "windy-weather 动态获取失败"; }
+  render();
+}
+const windyFor = cond => S.windy.filter(w => w.cond === cond).sort((a, b) => a.ts - b.ts);
+
+/* ===================== 状态判断 ===================== */
+function stateOf(b, kind, ext) {
+  if (ext == null) return {label: "当天未开始", cls: ""};
+  const hi = kind === "highest";
+  if (b.tail) {
+    const reached = b.tail === "higher" ? ext >= b.deg : ext <= b.deg;
+    if (hi && b.tail === "below" && ext > b.deg) return {label: "已越过", cls: "dead"};
+    if (!hi && b.tail === "higher" && ext < b.deg) return {label: "已越过", cls: "dead"};
+    return reached ? {label: "已达到", cls: "acc"} : {label: "差" + Math.abs(b.deg - ext) + "度", cls: ""};
+  }
+  const gap = hi ? b.deg - ext : ext - b.deg;
+  if (gap === 0) return {label: "已到该度", cls: "acc"};
+  if (gap < 0) return {label: "已越过", cls: "dead"};
+  return gap === 1 ? {label: "差1度", cls: "warn"} : {label: "差" + gap + "度", cls: ""};
+}
+
+/* ===================== 渲染：状态条 ===================== */
+function renderStatus() {
+  const chip = (label, ts, err) => `<span class="chip ${err ? "err" : ts ? "ok" : ""}">${esc(err || label + " " + (ts ? ago(ts) : "加载中"))}</span>`;
+  $("#status").innerHTML = chip("报文", S.metarTs, S.metarErr) + chip("盘口", S.view === "city" ? S.booksTs : S.eventsTs, S.view === "city" ? S.booksErr : S.eventsErr) + chip("windy", S.windyTs, S.windyErr);
+}
+function tick() { const t = bj(); $("#clock").textContent = [t.h, t.mi, t.s].map(x => String(x).padStart(2, "0")).join(":"); renderStatus(); }
+
+/* ===================== 渲染：总览 ===================== */
+function favOf(ev) {
+  if (!ev || !ev.buckets) return null;
+  let best = null;
+  for (const b of ev.buckets) {
+    const mid = b.bestBid != null && b.bestAsk != null ? (b.bestBid + b.bestAsk) / 2 : (b.bestAsk ?? b.last);
+    if (mid != null && (!best || mid > best.mid)) best = {...b, mid};
+  }
+  return best;
+}
+function renderOverview() {
+  const today = bjDate(0).iso, t = bj();
+  const cards = CITIES.map(c => {
+    const w = wx(c, today), ev = evOf("hi0", c.key), fav = favOf(ev);
+    const wToday = S.windy.filter(x => x.ts >= dayStartTs(today) && x.title && x.title.includes(" " + c.key + " "));
+    const buys = wToday.filter(x => x.side === "BUY");
+    const st = fav && w ? stateOf(fav, "highest", w.hi.t) : null;
+    return `<button class="card city" data-city="${c.key}">
+      <div class="row1"><span class="name">${c.zh}</span><span class="small muted">${c.icao} ${c.apt}</span>
+        <span class="temp">${w ? w.last.t + "°" : "—"}</span></div>
+      <dl class="kv">
+        <dt>今日最高</dt><dd class="num">${w ? `${w.hi.t}°C <span class="muted">(${hhmm(w.hi.ts)})</span>` : "—"}</dd>
+        <dt>今日最低</dt><dd class="num">${w ? `${w.lo.t}°C <span class="muted">(${hhmm(w.lo.ts)})</span>` : "—"}</dd>
+        <dt>最新一报</dt><dd class="num">${w ? hhmm(w.last.ts) + (w.trend > 0 ? " ↑" : w.trend < 0 ? " ↓" : " →") : "—"}</dd>
+      </dl>
+      <div class="fav">${ev && ev.missing ? `<span class="pill">今日最高温市场未找到</span>` : fav ? `<span class="pill acc">最高温热门 ${esc(fav.title)} ${fmtP(fav.mid)}</span>${st ? `<span class="pill ${st.cls}">${st.label}</span>` : ""}` : `<span class="pill">市场加载中</span>`}
+        ${buys.length ? `<span class="wchip">windy 今日买 ${buys.length} 笔</span>` : ""}</div>
+    </button>`;
+  }).join("");
+  const feed = S.windy.filter(x => x.ts >= dayStartTs(today)).slice(0, 12).map(x =>
+    `<div><span class="num muted">${hhmm(x.ts)}</span><span class="pill ${x.side === "BUY" ? (x.out === "Yes" ? "yes" : "no") : ""}">${x.side === "BUY" ? "买" : "卖"} ${esc(x.out)} ${fmtP(x.price)}</span><span>${esc(shortTitle(x.title))}</span><span class="muted num">$${x.usd.toFixed(0)}</span></div>`).join("");
+  const phase = t.h < 11 ? "上午：最高温还在上升，按研究数据，11–12 点进场的胜率偏低" : t.h < 13 ? "11–13 点：气温接近日内高点，研究显示 12 点进场整体亏损" : t.h < 16 ? "13–16 点：研究里 windy-weather 最赚钱的时段（判断今天最高温是否到顶）" : "傍晚：最高温基本确定；可以看明日最低温";
+  $("#view-overview").innerHTML = `
+    ${S.storageOK ? "" : `<div class="note" style="margin-bottom:10px;color:var(--no)">当前打开方式不能保存数据：纸面记录在关闭页面后会丢失。请用 Chrome 打开这个文件，或用网址方式打开；继续使用的话，每次用完到“纸面记录”页导出备份。</div>`}
+    <div class="note" style="margin-bottom:10px">${phase}</div>
+    <div class="grid-cities">${cards}</div>
+    <div class="card" style="margin-top:12px"><h3>windy-weather 今日动态</h3><div class="feed">${feed || `<div class="muted">今天还没有成交</div>`}</div></div>`;
+}
+function shortTitle(t) {
+  const m = String(t || "").match(/(highest|lowest) temperature in (.+?) be (.+?) on (\w+ \d+)/i);
+  if (!m) return t;
+  const c = CITIES.find(x => x.key === m[2]);
+  return `${c ? c.zh : m[2]} ${m[1].toLowerCase() === "highest" ? "最高" : "最低"} ${m[3].replace(" or higher", "+").replace(" or below", "−")} ${m[4]}`;
+}
+
+/* ===================== 渲染：城市详情 ===================== */
+function chartSVG(city) {
+  const today = bjDate(0).iso, yday = bjDate(-1).iso;
+  const a = dayObs(city, today), b = dayObs(city, yday);
+  const all = a.concat(b); if (!all.length) return `<div class="empty">暂无报文</div>`;
+  const W = 640, H = 220, L = 34, R = 10, T = 12, B = 26;
+  let lo = Math.min(...all.map(o => o.t)) - 1, hi = Math.max(...all.map(o => o.t)) + 1;
+  const x = h => L + (W - L - R) * h / 24, y = v => T + (H - T - B) * (hi - v) / (hi - lo);
+  const pts = (arr, iso) => arr.map(o => `${x((o.ts - dayStartTs(iso)) / 3600e3).toFixed(1)},${y(o.t).toFixed(1)}`).join(" ");
+  let grid = "";
+  for (let v = Math.ceil(lo); v <= hi; v++) if ((hi - lo) <= 12 || v % 2 === 0) grid += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" stroke-width="1"/><text x="${L - 6}" y="${y(v) + 4}" font-size="11" text-anchor="end" fill="var(--muted)">${v}</text>`;
+  for (let h = 0; h <= 24; h += 3) grid += `<text x="${x(h)}" y="${H - 8}" font-size="11" text-anchor="middle" fill="var(--muted)">${h}</text>`;
+  const band = `<rect x="${x(13)}" y="${T}" width="${x(16) - x(13)}" height="${H - T - B}" fill="var(--accent-soft)" opacity=".6"/>`;
+  const w = wx(city, today);
+  const mark = w ? `<circle cx="${x((w.hi.ts - dayStartTs(today)) / 3600e3)}" cy="${y(w.hi.t)}" r="4.5" fill="var(--no)"/><circle cx="${x((w.last.ts - dayStartTs(today)) / 3600e3)}" cy="${y(w.last.t)}" r="4" fill="var(--accent)"/>` : "";
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${city.zh}今日与昨日逐时气温">${band}${grid}
+    <polyline points="${pts(b, yday)}" fill="none" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="4 4"/>
+    <polyline points="${pts(a, today)}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>${mark}</svg>
+    <div class="small muted">实线今天，虚线昨天；横轴北京时间，纵轴 °C（整数，与结算一致）；浅色区为 13–16 点；红点为今日最高。</div>`;
+}
+function renderCity() {
+  const city = CITIES.find(c => c.key === S.city) || CITIES[0];
+  const K = KINDS.find(k => k.id === S.kindId) || KINDS[0];
+  const ev = evOf(K.id, city.key);
+  const date = bjDate(K.off).iso;
+  const w = wx(city, date);
+  const ext = w ? (K.kind === "highest" ? w.hi.t : w.lo.t) : null;
+  const citySeg = CITIES.map(c => `<button data-pick-city="${c.key}" aria-pressed="${c.key === city.key}">${c.zh}</button>`).join("");
+  const kindSeg = KINDS.map(k => `<button data-pick-kind="${k.id}" aria-pressed="${k.id === K.id}">${k.label}</button>`).join("");
+  let table;
+  if (!ev) table = `<div class="empty">市场加载中…</div>`;
+  else if (ev.missing) table = `<div class="empty">Polymarket 这一天没有开这个市场。<br><span class="small">有的城市只开最高温，或者明天的市场还没上线（通常提前 2 天开）。</span></div>`;
+  else {
+    const rows = ev.buckets.map((b, i) => {
+      const by = ladder(b, "Yes", "buy"), bn = ladder(b, "No", "buy");
+      const y0 = by && by[0], n0 = bn && bn[0];
+      const st = stateOf(b, K.kind, K.off === 0 ? ext : null);
+      const ws = windyFor(b.cond).filter(x => x.side === "BUY");
+      const wtxt = ws.slice(-2).map(x => `<span class="wchip">W ${hhmm(x.ts)} ${x.out} ${fmtP(x.price)}</span>`).join(" ");
+      const settled = b.closed ? (b.settle[0] === 1 ? `<span class="pill yes">结算 Yes</span>` : `<span class="pill">结算 No</span>`) : "";
+      return `<tr>
+        <td><b>${esc(b.title)}</b> <span class="pill ${st.cls}">${st.label}</span> ${settled}${wtxt ? `<span class="sub">${wtxt}</span>` : ""}</td>
+        <td class="num">${y0 ? fmtP(y0.p) : "—"}<span class="sub">${y0 ? Math.round(y0.s) + " 份" : ""}</span></td>
+        <td class="num">${n0 ? fmtP(n0.p) : "—"}<span class="sub">${n0 ? Math.round(n0.s) + " 份" : ""}</span></td>
+        <td><button class="btn yes" data-buy="${i}" data-side="Yes" ${y0 && !b.closed ? "" : "disabled"}>买Yes</button> <button class="btn no" data-buy="${i}" data-side="No" ${n0 && !b.closed ? "" : "disabled"}>买No</button></td>
+      </tr>`;
+    }).join("");
+    table = `<div class="tablewrap"><table><thead><tr><th>档位 · 状态</th><th>Yes 买价</th><th>No 买价</th><th>纸面下单</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="small muted" style="margin-top:6px">买价 = 现在吃单能买到的最低价（已合并对侧挂单）；下方是该价位的可成交份额。W = windy-weather 在该档的最近买入。
+      <a href="https://polymarket.com/event/${esc(ev.slug)}" target="_blank" rel="noopener">在 Polymarket 打开</a></div>`;
+  }
+  const wxBox = w ? `<dl class="kv">
+      <dt>最新一报</dt><dd class="num">${w.last.t}°C · ${hhmm(w.last.ts)} ${w.trend > 0 ? "↑" : w.trend < 0 ? "↓" : "→"}</dd>
+      <dt>${K.off === 0 ? "今日" : "（明日未开始）"}最高</dt><dd class="num">${K.off === 0 ? `${w.hi.t}°C · ${hhmm(w.hi.ts)}` : "—"}</dd>
+      <dt>${K.off === 0 ? "今日" : ""}最低</dt><dd class="num">${K.off === 0 ? `${w.lo.t}°C · ${hhmm(w.lo.ts)}` : "—"}</dd>
+      <dt>原始报文</dt><dd class="num small" style="white-space:normal;word-break:break-all">${esc(w.last.raw)}</dd></dl>`
+    : `<div class="muted">${K.off === 0 ? "今天还没有报文" : "明天还没开始，报文为空；看今日曲线和预报判断"}</div>`;
+  const wnow = wx(city, bjDate(0).iso);
+  $("#view-city").innerHTML = `
+    <div class="seg" role="group" aria-label="城市">${citySeg}</div>
+    <div class="seg" role="group" aria-label="市场">${kindSeg}</div>
+    <div class="two">
+      <div class="card"><h2>${city.zh} · ${city.icao} ${city.apt}</h2>${chartSVG(city)}<div style="margin-top:8px">${K.off === 0 ? wxBox : (wnow ? `<div class="small muted">今日当前 ${wnow.last.t}°C（${hhmm(wnow.last.ts)}），今日最低 ${wnow.lo.t}°C，最高 ${wnow.hi.t}°C</div>` : "")}</div>
+        <div class="actions"><button class="btn" id="copy-board">复制盘面（发给 AI 问建议）</button></div></div>
+      <div class="card"><h2>${K.label} <span class="small muted">${date}</span></h2>${table}</div>
+    </div>`;
+}
+
+/* ===================== 纸面下单 ===================== */
+function openBuy(i, side) {
+  const city = CITIES.find(c => c.key === S.city), K = KINDS.find(k => k.id === S.kindId), ev = evOf(K.id, city.key), b = ev.buckets[i];
+  const w = wx(city, bjDate(K.off).iso);
+  const ext = w && K.off === 0 ? (K.kind === "highest" ? w.hi.t : w.lo.t) : null;
+  const st = stateOf(b, K.kind, ext);
+  const root = $("#sheet-root");
+  const draw = () => {
+    const stake = Math.max(1, +($("#stake")?.value || S.settings.stake || 10));
+    const lad = ladder(b, side, "buy"), f = walk(lad, stake, "usd");
+    const fee = f.shares * b.fee * (f.avg || 0) * (1 - (f.avg || 0));
+    $("#quote").innerHTML = f.avg ? `
+      <div class="line"><span>成交均价</span><b class="num">${fmtP(f.avg)}</b></div>
+      <div class="line"><span>份额</span><span class="num">${f.shares.toFixed(2)}</span></div>
+      <div class="line"><span>手续费（吃单）</span><span class="num">${fmtUsd(fee)}</span></div>
+      <div class="line"><span>赢了拿回</span><span class="num">${fmtUsd(f.shares)}（净 ${fmtUsd(f.shares - f.usd - fee, true)}）</span></div>
+      <div class="line"><span>保本胜率</span><span class="num">${pct((f.usd + fee) / f.shares)}</span></div>
+      ${f.filled ? "" : `<div class="note" style="color:var(--no)">盘口深度不够，只能成交 ${fmtUsd(f.usd)}</div>`}
+      ${st.cls === "dead" ? `<div class="note" style="color:var(--no)">注意：按目前报文这一档已经越过，这个方向结算时基本已定。</div>` : ""}
+      ${f.avg < 0.02 || f.avg > 0.98 ? `<div class="note">价格在 2¢ 以下或 98¢ 以上，结果基本已定，这类单对练判断帮助不大。</div>` : ""}` : `<div class="note">当前没有可成交的挂单</div>`;
+    return {f, fee, stake};
+  };
+  root.innerHTML = `<div class="sheet-bg" id="sheet-bg"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <h2 id="sheet-title">纸面买入 <span class="pill ${side === "Yes" ? "yes" : "no"}">${side}</span></h2>
+    <div class="small muted">${city.zh} · ${K.label} · <b>${esc(b.title)}</b> · 状态 ${st.label}${w && K.off === 0 ? ` · 当前 ${w.last.t}°C（${hhmm(w.last.ts)}）` : ""}</div>
+    <div class="field"><label for="stake">投入金额（美元）</label><input id="stake" type="number" inputmode="decimal" min="1" step="1" value="${S.settings.stake || 10}"></div>
+    <div id="quote"></div>
+    <div class="field"><label for="reason">理由（可选，复盘用）</label><textarea id="reason" rows="2" placeholder="例如：14:00 起持平 18°C，云量增加，判断不会再升"></textarea></div>
+    <div class="small muted">按此刻实时盘口逐档吃单计算；价格会变，记录的是你确认这一刻的盘口。</div>
+    <div class="actions"><button class="btn" id="sheet-cancel">取消</button><button class="btn pri" id="sheet-ok">确认纸面下单</button></div>
+  </div></div>`;
+  draw();
+  $("#stake").addEventListener("input", draw);
+  $("#sheet-cancel").onclick = () => root.innerHTML = "";
+  $("#sheet-bg").addEventListener("click", e => { if (e.target.id === "sheet-bg") root.innerHTML = ""; });
+  $("#sheet-ok").onclick = () => {
+    const {f, fee, stake} = draw();
+    if (!f.avg || f.shares <= 0) { toast("没有可成交的价格"); return; }
+    S.settings.stake = stake; store.set("wd.settings.v1", S.settings);
+    S.trades.unshift({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: Date.now(),
+      city: city.key, kind: K.kind, date: bjDate(K.off).iso, slug: ev.slug, bucket: b.title, deg: b.deg, tail: b.tail, cond: b.cond, yes: b.yes, no: b.no,
+      side, stake: f.usd, shares: f.shares, avg: f.avg, fee, feeRate: b.fee, best: ladder(b, side, "buy")[0].p,
+      temp: w ? w.last.t : null, ext, state: st.label, reason: $("#reason").value.trim(), status: "open",
+    });
+    saveTrades(); root.innerHTML = ""; toast("已记录纸面买入");
+  };
+}
+function openClose(id) {
+  const t = S.trades.find(x => x.id === id); if (!t) return;
+  const b = {yes: t.yes, no: t.no};
+  const root = $("#sheet-root");
+  root.innerHTML = `<div class="sheet-bg" id="sheet-bg"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <h2 id="sheet-title">纸面平仓</h2><div class="small muted">${esc(cityZh(t.city))} · ${t.kind === "highest" ? "最高温" : "最低温"} ${t.date} · ${esc(t.bucket)} · ${t.side}</div>
+    <div id="quote"><div class="empty">正在拉取实时盘口…</div></div>
+    <div class="actions"><button class="btn" id="sheet-cancel">取消</button><button class="btn pri" id="sheet-ok" disabled>按实时买价卖出</button></div></div></div>`;
+  $("#sheet-cancel").onclick = () => root.innerHTML = "";
+  getJSON(`${CLOB}/books`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify([{token_id: t.yes}, {token_id: t.no}])}).then(res => {
+    for (const x of res || []) S.books[x.asset_id] = {bids: (x.bids || []).map(y => ({p: +y.price, s: +y.size})), asks: (x.asks || []).map(y => ({p: +y.price, s: +y.size}))};
+    const f = walk(ladder(b, t.side, "sell"), t.shares, "shares");
+    const fee = f.shares * t.feeRate * (f.avg || 0) * (1 - (f.avg || 0));
+    const pnl = f.usd - fee - t.stake - t.fee;
+    $("#quote").innerHTML = f.avg ? `<div class="line"><span>卖出均价</span><b class="num">${fmtP(f.avg)}</b></div>
+      <div class="line"><span>卖出所得（扣费后）</span><span class="num">${fmtUsd(f.usd - fee)}</span></div>
+      <div class="line"><span>这笔盈亏</span><b class="num ${pnl >= 0 ? "pos" : "neg"}">${fmtUsd(pnl, true)}</b></div>
+      ${f.filled ? "" : `<div class="note" style="color:var(--no)">买单深度不够，只能卖出 ${f.shares.toFixed(1)} 份</div>`}` : `<div class="note">现在没有买单，无法卖出</div>`;
+    if (f.avg && f.filled) { $("#sheet-ok").disabled = false; $("#sheet-ok").onclick = () => {
+      Object.assign(t, {status: "closed", exitTs: Date.now(), exitAvg: f.avg, exitUsd: f.usd, exitFee: fee, pnl}); saveTrades(); root.innerHTML = ""; toast("已纸面平仓"); render(); }; }
+  }).catch(() => { $("#quote").innerHTML = `<div class="note">盘口获取失败，检查网络或 VPN</div>`; });
+}
+const cityZh = k => (CITIES.find(c => c.key === k) || {}).zh || k;
+
+/* ===================== 自动结算 ===================== */
+async function settleTrades() {
+  const open = S.trades.filter(t => t.status === "open");
+  const slugs = [...new Set(open.map(t => t.slug))];
+  let changed = false;
+  for (const slug of slugs) {
+    try {
+      const arr = await getJSON(`${GAMMA}/events?slug=${slug}`); if (!arr || !arr.length) continue;
+      for (const m of arr[0].markets || []) {
+        if (!m.closed) continue;
+        let px = []; try { px = JSON.parse(m.outcomePrices).map(Number); } catch {}
+        for (const t of open.filter(x => x.slug === slug && x.cond === (m.conditionId || "").toLowerCase())) {
+          const pay = t.side === "Yes" ? px[0] : px[1];
+          if (pay == null || isNaN(pay)) continue;
+          Object.assign(t, {status: "settled", payout: pay, settledTs: Date.now(), pnl: t.shares * pay - t.stake - t.fee});
+          changed = true;
+        }
+      }
+    } catch {}
+  }
+  if (changed) { saveTrades(); render(); }
+}
+
+/* ===================== 渲染：纸面记录 ===================== */
+function summarize(list) {
+  const done = list.filter(t => t.status !== "open");
+  const cost = done.reduce((s, t) => s + t.stake + t.fee, 0), pnl = done.reduce((s, t) => s + (t.pnl || 0), 0);
+  const wins = done.filter(t => (t.pnl || 0) > 0).length;
+  const avgP = done.length ? done.reduce((s, t) => s + t.avg, 0) / done.length : null;
+  return {n: list.length, done: done.length, wins, win: done.length ? wins / done.length : null, cost, pnl, roi: cost ? pnl / cost : null, avgP};
+}
+function groupTable(title, keyFn) {
+  const g = {}; for (const t of S.trades) (g[keyFn(t)] ||= []).push(t);
+  const rows = Object.entries(g).map(([k, v]) => { const s = summarize(v); return `<tr><td>${esc(k)}</td><td class="num">${s.done}/${s.n}</td><td class="num">${s.win == null ? "—" : pct(s.win)}</td><td class="num">${s.avgP == null ? "—" : fmtP(s.avgP)}</td><td class="num ${s.pnl >= 0 ? "pos" : "neg"}">${fmtUsd(s.pnl, true)}</td><td class="num">${pct(s.roi, true)}</td></tr>`; }).join("");
+  return `<div class="card"><h3>${title}</h3><div class="tablewrap"><table><thead><tr><th>分组</th><th>已结/全部</th><th>胜率</th><th>均价</th><th>盈亏</th><th>收益率</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+function renderJournal() {
+  const s = summarize(S.trades);
+  const list = S.trades.map(t => {
+    const res = t.status === "open" ? `<span class="pill">持有中</span> <button class="btn" data-close="${t.id}">平仓</button>`
+      : t.status === "closed" ? `<span class="pill">已平仓 ${fmtP(t.exitAvg)}</span>` : (t.payout === 1 ? `<span class="pill yes">赢</span>` : `<span class="pill no">输</span>`);
+    const ws = (S.windy || []).filter(x => x.cond === t.cond && x.side === "BUY");
+    return `<tr><td><b>${cityZh(t.city)} ${t.kind === "highest" ? "最高" : "最低"} ${esc(t.bucket)}</b> <span class="pill ${t.side === "Yes" ? "yes" : "no"}">${t.side}</span>
+        <span class="sub">${t.date} · 下单 ${hhmm(t.ts)} · 当时 ${t.temp ?? "—"}°C · ${esc(t.state)}${t.reason ? " · " + esc(t.reason) : ""}${ws.length ? ` · windy 同档买 ${ws.length} 笔` : ""}</span></td>
+      <td class="num">${fmtP(t.avg)}<span class="sub">${fmtUsd(t.stake)}</span></td>
+      <td class="num ${t.pnl > 0 ? "pos" : t.pnl < 0 ? "neg" : ""}">${t.status === "open" ? "—" : fmtUsd(t.pnl, true)}</td>
+      <td>${res} <button class="btn" data-del="${t.id}" aria-label="删除这条记录">删除</button></td></tr>`;
+  }).join("");
+  const hourKey = t => { const h = bj(t.ts).h; return h < 11 ? "11 点前" : h < 13 ? "11–13 点" : h < 16 ? "13–16 点" : "16 点后"; };
+  $("#view-journal").innerHTML = `
+    <div class="stats">
+      <div class="stat"><b>${s.n}</b><span>纸面单（已结 ${s.done}）</span></div>
+      <div class="stat"><b>${s.win == null ? "—" : pct(s.win)}</b><span>胜率</span></div>
+      <div class="stat"><b class="${s.pnl >= 0 ? "pos" : "neg"}">${fmtUsd(s.pnl, true)}</b><span>累计盈亏（含手续费）</span></div>
+      <div class="stat"><b>${pct(s.roi, true)}</b><span>收益率</span></div>
+      <div class="stat"><b>${s.avgP == null ? "—" : fmtP(s.avgP)}</b><span>平均买入价</span></div>
+    </div>
+    ${S.trades.length ? `<div class="card"><h3>全部纸面单</h3><div class="tablewrap"><table><thead><tr><th>市场 · 详情</th><th>均价/金额</th><th>盈亏</th><th>操作</th></tr></thead><tbody>${list}</tbody></table></div></div>
+      <div class="two" style="margin-top:12px">${groupTable("按下单时状态", t => t.state)}${groupTable("按城市", t => cityZh(t.city))}</div>
+      <div class="two" style="margin-top:12px">${groupTable("按下单时段（北京时间）", hourKey)}${groupTable("按方向", t => (t.kind === "highest" ? "最高温 " : "最低温 ") + t.side)}</div>`
+    : `<div class="card empty">还没有纸面单。到“城市”页，在档位右边点“买Yes / 买No”记录第一笔；市场结算后这里会自动算出输赢。</div>`}
+    <div class="card" style="margin-top:12px"><h3>备份</h3>
+      <div class="small muted">记录只存在这台设备的浏览器里。换设备或清理浏览器前先导出。</div>
+      <div class="actions" style="justify-content:flex-start"><button class="btn" id="export">导出 JSON</button>
+        <label class="btn" for="import-file">导入 JSON</label><input id="import-file" type="file" accept="application/json,.json" hidden>
+        <button class="btn" id="settle-now">立即检查结算</button></div></div>`;
+}
+
+/* ===================== 复制盘面 ===================== */
+function boardText() {
+  const city = CITIES.find(c => c.key === S.city), K = KINDS.find(k => k.id === S.kindId), ev = evOf(K.id, city.key);
+  const w = wx(city, bjDate(0).iso), t = bj();
+  let s = `【${city.zh} ${city.icao}】北京时间 ${String(t.h).padStart(2,"0")}:${String(t.mi).padStart(2,"0")}，市场：${K.label}（${bjDate(K.off).iso}）\n`;
+  if (w) s += `今日报文：${w.obs.map(o => hhmm(o.ts) + " " + o.t + "°").join("，")}\n今日最高 ${w.hi.t}°C（${hhmm(w.hi.ts)}），最低 ${w.lo.t}°C（${hhmm(w.lo.ts)}）\n最新原始报文：${w.last.raw}\n`;
+  if (ev && ev.buckets) for (const b of ev.buckets) {
+    const y = ladder(b, "Yes", "buy"), n = ladder(b, "No", "buy");
+    s += `${b.title}: Yes 买 ${y && y[0] ? fmtP(y[0].p) : "—"} / No 买 ${n && n[0] ? fmtP(n[0].p) : "—"}\n`;
+  }
+  return s + "结算规则：机场 METAR 常规报整数 °C，当地日期内最高/最低。请分析哪一档定价偏离、值得纸面下单吗？";
+}
+
+/* ===================== 事件 ===================== */
+function setView(v) {
+  S.view = v;
+  for (const id of ["overview", "city", "journal"]) { $("#view-" + id).hidden = id !== v; $("#tab-" + id).setAttribute("aria-current", id === v); }
+  if (v === "city") { loadEvents().then(loadBooks); }
+  render(); window.scrollTo(0, 0);
+}
+function render() {
+  renderStatus();
+  if (S.view === "overview") renderOverview();
+  else if (S.view === "city") renderCity();
+  else renderJournal();
+}
+document.addEventListener("click", e => {
+  const el = e.target.closest("button,[data-city]"); if (!el) return;
+  if (el.dataset.view) return setView(el.dataset.view);
+  if (el.dataset.city) { S.city = el.dataset.city; store.set("wd.city", S.city); return setView("city"); }
+  if (el.dataset.pickCity) { S.city = el.dataset.pickCity; store.set("wd.city", S.city); renderCity(); loadEvents().then(loadBooks); return; }
+  if (el.dataset.pickKind) { S.kindId = el.dataset.pickKind; store.set("wd.kind", S.kindId); renderCity(); loadEvents().then(loadBooks); return; }
+  if (el.dataset.buy != null) return openBuy(+el.dataset.buy, el.dataset.side);
+  if (el.dataset.close) return openClose(el.dataset.close);
+  if (el.dataset.del) {
+    if (el.dataset.confirm === "1") { S.trades = S.trades.filter(t => t.id !== el.dataset.del); saveTrades(); renderJournal(); }
+    else { el.dataset.confirm = "1"; el.textContent = "确认删除"; setTimeout(() => { if (el.isConnected) { el.dataset.confirm = ""; el.textContent = "删除"; } }, 3000); }
+    return;
+  }
+  if (el.id === "copy-board") {
+    const txt = boardText();
+    (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => toast("已复制，粘贴给 AI 即可"), () => {
+      $("#sheet-root").innerHTML = `<div class="sheet-bg" id="sheet-bg"><div class="sheet"><h2>盘面文本</h2><div class="field"><textarea id="board-txt" rows="12" readonly>${esc(txt)}</textarea></div><div class="actions"><button class="btn pri" id="sheet-cancel">关闭</button></div></div></div>`;
+      $("#board-txt").select(); $("#sheet-cancel").onclick = () => $("#sheet-root").innerHTML = "";
+    });
+  }
+  if (el.id === "export") {
+    const blob = new Blob([JSON.stringify({version: 1, exported: new Date().toISOString(), trades: S.trades}, null, 1)], {type: "application/json"});
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `weather-desk-${bjDate(0).iso}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+  if (el.id === "settle-now") { settleTrades().then(() => toast("结算检查完成")); }
+});
+document.addEventListener("change", e => {
+  if (e.target.id !== "import-file" || !e.target.files[0]) return;
+  e.target.files[0].text().then(txt => {
+    const j = JSON.parse(txt); const add = (j.trades || []).filter(t => t.id && !S.trades.some(x => x.id === t.id));
+    S.trades = S.trades.concat(add).sort((a, b) => b.ts - a.ts); saveTrades(); renderJournal(); toast(`导入 ${add.length} 条`);
+  }).catch(() => toast("文件格式不对，导入失败"));
+});
+
+/* ===================== 刷新节奏 ===================== */
+function every(ms, fn) { fn(); return setInterval(() => { if (!document.hidden) fn(); }, ms); }
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadMetar(); loadEvents(); loadWindy(); if (S.view === "city") loadBooks(); } });
+setInterval(tick, 1000); tick();
+for (const id of ["overview", "city", "journal"]) { $("#view-" + id).hidden = id !== S.view; }
+every(120e3, loadMetar);
+every(60e3, () => loadEvents());
+every(60e3, loadWindy);
+setInterval(() => { if (!document.hidden && S.view === "city") loadBooks(); }, 4000);
+every(300e3, settleTrades);
+render();
+</script>
+</body>
+</html>
