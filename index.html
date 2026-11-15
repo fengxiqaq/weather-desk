@@ -50,7 +50,7 @@ h2{font-size:16px;margin:4px 0 10px}
 h3{font-size:14px;margin:0 0 8px;color:var(--muted);font-weight:600;letter-spacing:.03em}
 .muted{color:var(--muted)} .small{font-size:12px}
 .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
-.grid-cities{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+.grid-cities{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(240px,100%),1fr));gap:10px}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
 .city{display:flex;flex-direction:column;gap:6px;text-align:left;width:100%}
 .city .row1{display:flex;align-items:baseline;gap:8px}
@@ -66,11 +66,17 @@ h3{font-size:14px;margin:0 0 8px;color:var(--muted);font-weight:600;letter-spaci
 .seg{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px}
 .seg button{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:14px}
 .seg button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
-.two{display:grid;gap:12px}
+.two{display:grid;gap:12px;grid-template-columns:minmax(0,1fr)}
+.two>*,.card,.grid-cities>*{min-width:0}
 @media(min-width:860px){.two{grid-template-columns:minmax(0,1fr) minmax(0,1.25fr)}}
 .chart{width:100%;height:auto;display:block}
 .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{border-collapse:collapse;width:100%;font-size:14px}
+.tablewrap table td:first-child{white-space:normal;min-width:6.5em}
+.tablewrap td:last-child{white-space:normal}
+.tablewrap td:last-child .btn{margin:2px 0}
+.mbtns{display:none}
+@media(max-width:560px){.mbtns{display:flex;gap:8px;margin-top:6px}.mbtns .btn{padding:6px 9px;white-space:nowrap}.col-act{display:none}}
 th,td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
 th:first-child,td:first-child{text-align:left}
 th{font-size:12px;color:var(--muted);font-weight:600}
@@ -95,6 +101,8 @@ td .sub{display:block;font-size:11px;color:var(--muted)}
 .field{display:flex;flex-direction:column;gap:4px;margin:8px 0}
 .field input,.field textarea,.field select{border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:8px}
 .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap}
+.actions .btn{white-space:normal;text-align:center}
+html,body{overflow-x:hidden}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(76px + env(safe-area-inset-bottom,0));background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:999px;font-size:14px;z-index:60}
 .empty{padding:24px;text-align:center;color:var(--muted)}
 .feed{display:flex;flex-direction:column;gap:6px;font-size:13px}
@@ -444,15 +452,16 @@ function renderCity() {
       const st = stateOf(b, K.kind, K.off === 0 ? ext : null);
       const ws = windyFor(b.cond).filter(x => x.side === "BUY");
       const wtxt = ws.slice(-2).map(x => `<span class="wchip">W ${hhmm(x.ts)} ${x.out} ${fmtP(x.price)}</span>`).join(" ");
+      const btns = `<button class="btn yes" data-buy="${i}" data-side="Yes" ${y0 && !b.closed ? "" : "disabled"}>买Yes</button> <button class="btn no" data-buy="${i}" data-side="No" ${n0 && !b.closed ? "" : "disabled"}>买No</button>`;
       const settled = b.closed ? (b.settle[0] === 1 ? `<span class="pill yes">结算 Yes</span>` : `<span class="pill">结算 No</span>`) : "";
       return `<tr>
-        <td><b>${esc(b.title)}</b> <span class="pill ${st.cls}">${st.label}</span> ${settled}${wtxt ? `<span class="sub">${wtxt}</span>` : ""}</td>
+        <td><b>${esc(b.title)}</b> <span class="pill ${st.cls}">${st.label}</span> ${settled}${wtxt ? `<span class="sub">${wtxt}</span>` : ""}<span class="mbtns">${btns}</span></td>
         <td class="num">${y0 ? fmtP(y0.p) : "—"}<span class="sub">${y0 ? Math.round(y0.s) + " 份" : ""}</span></td>
         <td class="num">${n0 ? fmtP(n0.p) : "—"}<span class="sub">${n0 ? Math.round(n0.s) + " 份" : ""}</span></td>
-        <td><button class="btn yes" data-buy="${i}" data-side="Yes" ${y0 && !b.closed ? "" : "disabled"}>买Yes</button> <button class="btn no" data-buy="${i}" data-side="No" ${n0 && !b.closed ? "" : "disabled"}>买No</button></td>
+        <td class="col-act">${btns}</td>
       </tr>`;
     }).join("");
-    table = `<div class="tablewrap"><table><thead><tr><th>档位 · 状态</th><th>Yes 买价</th><th>No 买价</th><th>纸面下单</th></tr></thead><tbody>${rows}</tbody></table></div>
+    table = `<div class="tablewrap"><table><thead><tr><th>档位 · 状态</th><th>Yes 买价</th><th>No 买价</th><th class="col-act">纸面下单</th></tr></thead><tbody>${rows}</tbody></table></div>
       <div class="small muted" style="margin-top:6px">买价 = 现在吃单能买到的最低价（已合并对侧挂单）；下方是该价位的可成交份额。W = windy-weather 在该档的最近买入。
       <a href="https://polymarket.com/event/${esc(ev.slug)}" target="_blank" rel="noopener">在 Polymarket 打开</a></div>`;
   }
