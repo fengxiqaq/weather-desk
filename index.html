@@ -87,6 +87,12 @@ td .sub{display:block;font-size:11px;color:var(--muted)}
 .btn.pri{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn:focus-visible,nav.tabs button:focus-visible,.seg button:focus-visible,.city:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+tr.ob td{background:none}
+tr.ob td:last-child{background:linear-gradient(to left,var(--bar) var(--w),transparent var(--w)) no-repeat}
+tr.ob.ask{--bar:var(--no-soft)} tr.ob.ask td:first-child{color:var(--no);font-weight:600}
+tr.ob.bid{--bar:var(--yes-soft)} tr.ob.bid td:first-child{color:var(--yes);font-weight:600}
+tr.ob-mid td{text-align:center!important;font-size:12px;color:var(--muted);background:var(--panel2);white-space:normal}
+.obt td,.obt th{text-align:right} .obt td:first-child,.obt th:first-child{text-align:left}
 .wchip{display:inline-block;font-size:11px;padding:0 5px;border-radius:4px;background:var(--warn-soft);color:var(--warn);margin-top:2px}
 .note{font-size:13px;color:var(--muted);background:var(--panel2);border-radius:8px;padding:8px 10px}
 .stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;margin-bottom:12px}
@@ -308,6 +314,7 @@ async function loadBooks() {
     S.booksTs = Date.now(); S.booksErr = null;
   } catch (e) { S.booksErr = "盘口获取失败（检查 VPN）"; }
   if (S.view === "city") renderCity();
+  if (S.bookSheet) renderBookSheet();
   renderStatus();
 }
 /* 合成可成交梯子：买 Yes = Yes 卖单 ∪ (1 − No 买单)；买 No 同理（互补撮合） */
@@ -452,17 +459,19 @@ function renderCity() {
       const st = stateOf(b, K.kind, K.off === 0 ? ext : null);
       const ws = windyFor(b.cond).filter(x => x.side === "BUY");
       const wtxt = ws.slice(-2).map(x => `<span class="wchip">W ${hhmm(x.ts)} ${x.out} ${fmtP(x.price)}</span>`).join(" ");
-      const btns = `<button class="btn yes" data-buy="${i}" data-side="Yes" ${y0 && !b.closed ? "" : "disabled"}>买Yes</button> <button class="btn no" data-buy="${i}" data-side="No" ${n0 && !b.closed ? "" : "disabled"}>买No</button>`;
+      const btns = `<button class="btn yes" data-buy="${i}" data-side="Yes" ${y0 && !b.closed ? "" : "disabled"}>买Yes</button> <button class="btn no" data-buy="${i}" data-side="No" ${n0 && !b.closed ? "" : "disabled"}>买No</button> <button class="btn" data-book="${i}">盘口</button>`;
+      const spread = y0 && n0 ? y0.p + n0.p - 1 : null;
+      const spreadPill = spread != null && spread >= 0.15 ? `<span class="pill warn">价差 ${Math.round(spread * 100)}¢</span>` : "";
       const settled = b.closed ? (b.settle[0] === 1 ? `<span class="pill yes">结算 Yes</span>` : `<span class="pill">结算 No</span>`) : "";
       return `<tr>
-        <td><b>${esc(b.title)}</b> <span class="pill ${st.cls}">${st.label}</span> ${settled}${wtxt ? `<span class="sub">${wtxt}</span>` : ""}<span class="mbtns">${btns}</span></td>
+        <td><b>${esc(b.title)}</b> <span class="pill ${st.cls}">${st.label}</span> ${spreadPill} ${settled}${wtxt ? `<span class="sub">${wtxt}</span>` : ""}<span class="mbtns">${btns}</span></td>
         <td class="num">${y0 ? fmtP(y0.p) : "—"}<span class="sub">${y0 ? Math.round(y0.s) + " 份" : ""}</span></td>
         <td class="num">${n0 ? fmtP(n0.p) : "—"}<span class="sub">${n0 ? Math.round(n0.s) + " 份" : ""}</span></td>
         <td class="col-act">${btns}</td>
       </tr>`;
     }).join("");
     table = `<div class="tablewrap"><table><thead><tr><th>档位 · 状态</th><th>Yes 买价</th><th>No 买价</th><th class="col-act">纸面下单</th></tr></thead><tbody>${rows}</tbody></table></div>
-      <div class="small muted" style="margin-top:6px">买价 = 现在吃单能买到的最低价（已合并对侧挂单）；下方是该价位的可成交份额。W = windy-weather 在该档的最近买入。
+      <div class="small muted" style="margin-top:6px">买价 = 现在吃单能买到的最低价（已合并对侧挂单）；下方是该价位的可成交份额。Yes 买价 + No 买价 − 1 就是买卖价差，价差大说明挂单少，直接吃单吃亏。点“盘口”看完整订单簿和最近成交。W = windy-weather 在该档的最近买入。
       <a href="https://polymarket.com/event/${esc(ev.slug)}" target="_blank" rel="noopener">在 Polymarket 打开</a></div>`;
   }
   const wxBox = w ? `<dl class="kv">
@@ -530,6 +539,63 @@ function openBuy(i, side) {
     saveTrades(); root.innerHTML = ""; toast("已记录纸面买入");
   };
 }
+/* ===================== 订单簿 ===================== */
+function openBook(i, side) {
+  S.bookSheet = {i, side: side || "Yes", trades: null, tradesTs: 0};
+  renderBookSheet(); loadBookTrades();
+}
+async function loadBookTrades() {
+  const bs = S.bookSheet; if (!bs) return;
+  const ev = evOf(S.kindId, S.city); const b = ev && ev.buckets && ev.buckets[bs.i]; if (!b) return;
+  try {
+    const j = await getJSON(`${DATA}/trades?condition=${b.cond}&limit=15&taker_only=true`);
+    if (S.bookSheet !== bs) return;
+    bs.trades = (j.data || []).map(t => ({ts: t.timestamp * 1000, side: t.side, out: t.outcome, p: t.price, s: t.size}));
+    bs.tradesTs = Date.now();
+  } catch { if (S.bookSheet === bs) bs.trades = bs.trades || "err"; }
+  if (S.bookSheet === bs) renderBookSheet();
+}
+function renderBookSheet() {
+  const bs = S.bookSheet; if (!bs) return;
+  const city = CITIES.find(c => c.key === S.city), K = KINDS.find(k => k.id === S.kindId), ev = evOf(K.id, city.key);
+  const b = ev && ev.buckets && ev.buckets[bs.i]; if (!b) { closeSheet(); return; }
+  const side = bs.side;
+  const asks = (ladder(b, side, "buy") || []).slice(0, 8), bids = (ladder(b, side, "sell") || []).slice(0, 8);
+  const maxS = Math.max(1, ...asks.map(x => x.s), ...bids.map(x => x.s));
+  const fp = v => v == null ? "—" : (v * 100).toFixed(1) + "¢";
+  const row = (x, cum, cls) => `<tr class="ob ${cls}" style="--w:${(x.s / maxS * 100).toFixed(1)}%"><td class="num">${fp(x.p)}</td><td class="num">${Math.round(x.s).toLocaleString()}</td><td class="num">$${(x.p * x.s).toFixed(x.p * x.s < 100 ? 2 : 0)}</td><td class="num muted">${Math.round(cum).toLocaleString()}</td></tr>`;
+  let cum = 0;
+  const askRows = asks.map(x => { cum += x.s; return {x, cum}; }).reverse().map(o => row(o.x, o.cum, "ask")).join("");
+  cum = 0;
+  const bidRows = bids.map(x => { cum += x.s; return row(x, cum, "bid"); }).join("");
+  const a0 = asks[0], b0 = bids[0];
+  const mid = a0 && b0 ? (a0.p + b0.p) / 2 : null, spr = a0 && b0 ? a0.p - b0.p : null;
+  const tr = bs.trades === "err" ? `<div class="muted small">最近成交获取失败</div>` : !bs.trades ? `<div class="muted small">加载最近成交…</div>` : !bs.trades.length ? `<div class="muted small">还没有成交</div>` :
+    `<div class="tablewrap"><table><thead><tr><th>时间</th><th>吃单方</th><th>价格</th><th>${side} 等价</th><th>份额</th></tr></thead><tbody>${bs.trades.map(t => {
+      const eq = t.out === side ? t.p : 1 - t.p;
+      return `<tr><td class="num">${hhmm(t.ts)}</td><td><span class="pill ${t.side === "BUY" ? (t.out === "Yes" ? "yes" : "no") : ""}">${t.side === "BUY" ? "买" : "卖"} ${t.out}</span></td><td class="num">${fp(t.p)}</td><td class="num">${fp(eq)}</td><td class="num">${Math.round(t.s)}</td></tr>`; }).join("")}</tbody></table></div>`;
+  $("#sheet-root").innerHTML = `<div class="sheet-bg" id="sheet-bg"><div class="sheet" role="dialog" aria-modal="true" aria-labelledby="ob-title">
+    <h2 id="ob-title">订单簿 · ${city.zh} ${K.label} <b>${esc(b.title)}</b></h2>
+    <div class="seg" role="group" aria-label="视角"><button data-ob-side="Yes" aria-pressed="${side === "Yes"}">看 Yes</button><button data-ob-side="No" aria-pressed="${side === "No"}">看 No</button></div>
+    <div class="stats" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+      <div class="stat"><b class="pos">${fp(a0 && a0.p)}</b><span>买入价</span></div>
+      <div class="stat"><b class="neg">${fp(b0 && b0.p)}</b><span>卖出价</span></div>
+      <div class="stat"><b>${fp(mid)}</b><span>中间价</span></div>
+      <div class="stat"><b>${fp(spr)}</b><span>价差</span></div>
+    </div>
+    <div class="tablewrap"><table class="obt"><thead><tr><th>价格</th><th>份额</th><th>金额</th><th>累计份额</th></tr></thead><tbody>
+      ${askRows || `<tr><td colspan="4" class="muted">没有卖单</td></tr>`}
+      <tr class="ob-mid"><td colspan="4">↑ 卖单（买入成交）· 价差 ${fp(spr)} · 买单（卖出成交）↓</td></tr>
+      ${bidRows || `<tr><td colspan="4" class="muted">没有买单</td></tr>`}
+    </tbody></table></div>
+    <div class="small muted" style="margin:6px 0 12px">已合并对侧挂单：${side} 的卖单里包含“1 − 对侧买单”，买单里包含“1 − 对侧卖单”，和真实撮合一致。每 4 秒刷新，盘口 ${ago(S.booksTs)}。</div>
+    <h3>最近成交</h3>${tr}
+    <div class="actions"><button class="btn yes" data-buy="${bs.i}" data-side="Yes" ${b.closed ? "disabled" : ""}>纸面买 Yes</button><button class="btn no" data-buy="${bs.i}" data-side="No" ${b.closed ? "disabled" : ""}>纸面买 No</button><button class="btn pri" id="sheet-cancel">关闭</button></div>
+  </div></div>`;
+}
+function closeSheet() { S.bookSheet = null; $("#sheet-root").innerHTML = ""; }
+setInterval(() => { if (S.bookSheet && !document.hidden) loadBookTrades(); }, 15000);
+
 function openClose(id) {
   const t = S.trades.find(x => x.id === id); if (!t) return;
   const b = {yes: t.yes, no: t.no};
@@ -654,7 +720,10 @@ document.addEventListener("click", e => {
   if (el.dataset.city) { S.city = el.dataset.city; store.set("wd.city", S.city); return setView("city"); }
   if (el.dataset.pickCity) { S.city = el.dataset.pickCity; store.set("wd.city", S.city); renderCity(); loadEvents().then(loadBooks); return; }
   if (el.dataset.pickKind) { S.kindId = el.dataset.pickKind; store.set("wd.kind", S.kindId); renderCity(); loadEvents().then(loadBooks); return; }
-  if (el.dataset.buy != null) return openBuy(+el.dataset.buy, el.dataset.side);
+  if (el.dataset.buy != null) { S.bookSheet = null; return openBuy(+el.dataset.buy, el.dataset.side); }
+  if (el.dataset.book != null) return openBook(+el.dataset.book, "Yes");
+  if (el.dataset.obSide) { S.bookSheet.side = el.dataset.obSide; return renderBookSheet(); }
+  if (el.id === "sheet-cancel" && S.bookSheet) return closeSheet();
   if (el.dataset.close) return openClose(el.dataset.close);
   if (el.dataset.del) {
     if (el.dataset.confirm === "1") { S.trades = S.trades.filter(t => t.id !== el.dataset.del); saveTrades(); renderJournal(); }
@@ -674,6 +743,7 @@ document.addEventListener("click", e => {
   }
   if (el.id === "settle-now") { settleTrades().then(() => toast("结算检查完成")); }
 });
+document.addEventListener("click", e => { if (S.bookSheet && e.target.id === "sheet-bg") closeSheet(); });
 document.addEventListener("change", e => {
   if (e.target.id !== "import-file" || !e.target.files[0]) return;
   e.target.files[0].text().then(txt => {
