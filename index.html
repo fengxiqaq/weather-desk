@@ -43,7 +43,7 @@ header.top .wrap{display:flex;align-items:center;gap:10px;padding-block:10px;fle
 .chip.ok{background:var(--yes-soft);color:var(--yes)} .chip.err{background:var(--no-soft);color:var(--no)}
 main{padding-block:12px}
 nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:30;background:var(--panel);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom,0)}
-nav.tabs .wrap{display:grid;grid-template-columns:repeat(3,1fr)}
+nav.tabs .wrap{display:grid;grid-template-columns:repeat(4,1fr)}
 nav.tabs button{background:none;border:0;padding:12px 4px;font-size:15px;color:var(--muted)}
 nav.tabs button[aria-current="true"]{color:var(--accent);font-weight:700}
 h2{font-size:16px;margin:4px 0 10px}
@@ -111,6 +111,14 @@ tr.ob-mid td{text-align:center!important;font-size:12px;color:var(--muted);backg
 html,body{overflow-x:hidden}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(76px + env(safe-area-inset-bottom,0));background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:999px;font-size:14px;z-index:60}
 .empty{padding:24px;text-align:center;color:var(--muted)}
+.sig{display:grid;grid-template-columns:1fr auto;gap:4px 10px;padding:10px 0;border-top:1px solid var(--line)}
+.sig:first-child{border-top:0}
+.sig.fresh{background:var(--warn-soft);margin:0 -12px;padding:10px 12px}
+.sig .t{font-weight:600}
+.sig .m{font-size:12px;color:var(--muted)}
+.sig .r{text-align:right;white-space:nowrap}
+.tog{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:14px}
+.tog input[type=number]{width:80px;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:5px}
 .feed{display:flex;flex-direction:column;gap:6px;font-size:13px}
 .feed div{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -127,11 +135,13 @@ html,body{overflow-x:hidden}
   <section id="view-overview"></section>
   <section id="view-city" hidden></section>
   <section id="view-journal" hidden></section>
+  <section id="view-radar" hidden></section>
 </main>
 
 <nav class="tabs"><div class="wrap">
   <button id="tab-overview" data-view="overview" aria-current="true">总览</button>
   <button id="tab-city" data-view="city">城市</button>
+  <button id="tab-radar" data-view="radar">跟单</button>
   <button id="tab-journal" data-view="journal">纸面记录</button>
 </div></nav>
 
@@ -162,6 +172,8 @@ const KINDS = [
   {id:"lo0", kind:"lowest", off:0, label:"今日最低温"},
   {id:"lo1", kind:"lowest", off:1, label:"明日最低温"},
   {id:"hi1", kind:"highest", off:1, label:"明日最高温"},
+  {id:"lo2", kind:"lowest", off:2, label:"后天最低温"},
+  {id:"hi2", kind:"highest", off:2, label:"后天最高温"},
 ];
 
 /* ===================== 工具 ===================== */
@@ -191,6 +203,7 @@ function toast(msg) { const el = document.createElement("div"); el.className = "
 const S = {
   view: "overview", city: store.get("wd.city", "Shanghai"), kindId: store.get("wd.kind", "hi0"),
   metar: {}, metarTs: 0, metarErr: null,
+  fast: {}, fastTs: 0, fastErr: null,                // NOAA 中转：icao -> 最新一报 {ts,t,raw}
   events: {}, eventsTs: 0, eventsErr: null,          // key: kind|city|iso -> {slug, buckets[]}
   books: {}, booksTs: 0, booksErr: null,             // token -> {bids, asks}
   windy: [], windyTs: 0, windyErr: null,
@@ -217,6 +230,28 @@ async function obHistory(icao, iso, fresh) {
   const rows = (j.data || []).map(r => parseRaw(r.raw, Date.parse(r.utc_valid))).filter(Boolean).sort((a, b) => a.ts - b.ts);
   obsCache[key] = rows; return rows;
 }
+/* 快速源：自己部署的 Cloudflare Worker 中转 NOAA（比 IEM 早约 6 分钟），只补最新一报 */
+function mergeFast() {
+  for (const icao in S.fast) {
+    const o = S.fast[icao], arr = S.metar[icao] ||= [];
+    if (!arr.some(x => x.ts === o.ts)) { arr.push(o); arr.sort((a, b) => a.ts - b.ts); }
+  }
+}
+async function loadFast(manual) {
+  const url = (S.settings.proxy || "").trim(); if (!url) return;
+  try {
+    const j = await getJSON(url + (url.includes("?") ? "&" : "?") + "ids=" + CITIES.map(c => c.icao).join(","));
+    let n = 0;
+    for (const icao in j.reports || {}) {
+      const r = j.reports[icao], ts = Date.parse(r.utc.replace(/\//g, "-").replace(" ", "T") + ":00Z");
+      const o = parseRaw(r.raw, ts); if (!o || isNaN(ts)) continue;
+      o.fast = true; S.fast[icao] = o; n++;
+    }
+    if (!n) throw new Error("empty");
+    S.fastTs = Date.now(); S.fastErr = null; mergeFast(); render();
+    if (manual) toast(`中转可用：读到 ${n} 个机场的最新报文`);
+  } catch (e) { S.fastErr = "中转失败"; renderStatus(); if (manual) toast("中转地址读不到数据，请检查网址"); }
+}
 async function loadMetar() {
   const today = bjDate(0).iso, yday = bjDate(-1).iso;
   try {
@@ -225,7 +260,7 @@ async function loadMetar() {
       const [a, b] = await Promise.all([obHistory(c.icao, yday, false), obHistory(c.icao, today, true)]);
       by[c.icao] = b.concat(a).sort((x, y) => x.ts - y.ts);
     }));
-    S.metar = by; S.metarTs = Date.now(); S.metarErr = null; render(); return;
+    S.metar = by; S.metarTs = Date.now(); S.metarErr = null; mergeFast(); render(); return;
   } catch (e) { /* 退回批量接口 */ }
   try {
     const qs = CITIES.map(c => "station=" + c.icao).join("&");
@@ -244,7 +279,7 @@ async function loadMetar() {
       (by[st] ||= []).push({ts, t: parseInt(m[1].replace("M", "-"), 10), raw});
     }
     for (const k in by) by[k].sort((a, b) => a.ts - b.ts);
-    S.metar = by; S.metarTs = Date.now(); S.metarErr = null;
+    S.metar = by; S.metarTs = Date.now(); S.metarErr = null; mergeFast();
   } catch (e) { S.metarErr = "机场报文获取失败"; }
   render();
 }
@@ -371,7 +406,7 @@ function stateOf(b, kind, ext) {
 /* ===================== 渲染：状态条 ===================== */
 function renderStatus() {
   const chip = (label, ts, err) => `<span class="chip ${err ? "err" : ts ? "ok" : ""}">${esc(err || label + " " + (ts ? ago(ts) : "加载中"))}</span>`;
-  $("#status").innerHTML = chip("报文", S.metarTs, S.metarErr) + chip("盘口", S.view === "city" ? S.booksTs : S.eventsTs, S.view === "city" ? S.booksErr : S.eventsErr) + chip("windy", S.windyTs, S.windyErr);
+  $("#status").innerHTML = chip("报文", S.metarTs, S.metarErr) + (S.settings.proxy ? chip("NOAA", S.fastTs, S.fastErr) : "") + chip("盘口", S.view === "city" ? S.booksTs : S.eventsTs, S.view === "city" ? S.booksErr : S.eventsErr) + chip("windy", S.windyTs, S.windyErr);
 }
 function tick() { const t = bj(); $("#clock").textContent = [t.h, t.mi, t.s].map(x => String(x).padStart(2, "0")).join(":"); renderStatus(); }
 
@@ -451,7 +486,7 @@ function renderCity() {
   const kindSeg = KINDS.map(k => `<button data-pick-kind="${k.id}" aria-pressed="${k.id === K.id}">${k.label}</button>`).join("");
   let table;
   if (!ev) table = `<div class="empty">市场加载中…</div>`;
-  else if (ev.missing) table = `<div class="empty">Polymarket 这一天没有开这个市场。<br><span class="small">有的城市只开最高温，或者明天的市场还没上线（通常提前 2 天开）。</span></div>`;
+  else if (ev.missing) table = `<div class="empty">Polymarket 这一天没有开这个市场。<br><span class="small">有的城市只开最高温；新一天的市场每天北京时间 13:15 左右上线，所以 13 点前还看不到后天的。</span></div>`;
   else {
     const rows = ev.buckets.map((b, i) => {
       const by = ladder(b, "Yes", "buy"), bn = ladder(b, "No", "buy");
@@ -476,10 +511,10 @@ function renderCity() {
   }
   const wxBox = w ? `<dl class="kv">
       <dt>最新一报</dt><dd class="num">${w.last.t}°C · ${hhmm(w.last.ts)} ${w.trend > 0 ? "↑" : w.trend < 0 ? "↓" : "→"}</dd>
-      <dt>${K.off === 0 ? "今日" : "（明日未开始）"}最高</dt><dd class="num">${K.off === 0 ? `${w.hi.t}°C · ${hhmm(w.hi.ts)}` : "—"}</dd>
+      <dt>${K.off === 0 ? "今日" : K.off === 1 ? "（明日未开始）" : "（后天未开始）"}最高</dt><dd class="num">${K.off === 0 ? `${w.hi.t}°C · ${hhmm(w.hi.ts)}` : "—"}</dd>
       <dt>${K.off === 0 ? "今日" : ""}最低</dt><dd class="num">${K.off === 0 ? `${w.lo.t}°C · ${hhmm(w.lo.ts)}` : "—"}</dd>
       <dt>原始报文</dt><dd class="num small" style="white-space:normal;word-break:break-all">${esc(w.last.raw)}</dd></dl>`
-    : `<div class="muted">${K.off === 0 ? "今天还没有报文" : "明天还没开始，报文为空；看今日曲线和预报判断"}</div>`;
+    : `<div class="muted">${K.off === 0 ? "今天还没有报文" : (K.off === 1 ? "明天" : "后天") + "还没开始，报文为空；看今日曲线和预报判断"}</div>`;
   const wnow = wx(city, bjDate(0).iso);
   $("#view-city").innerHTML = `
     <div class="seg" role="group" aria-label="城市">${citySeg}</div>
@@ -643,6 +678,193 @@ async function settleTrades() {
   if (changed) { saveTrades(); render(); }
 }
 
+/* ===================== 持仓估值（未结算） ===================== */
+S.marks = {}; S.marksTs = 0;                           // token -> 现在能卖出的最好价格
+function decidedSide(t) {
+  /* 用机场报文判断这一档是否已经不可逆地确定；返回必赢的一方，未确定返回 null */
+  const city = CITIES.find(c => c.key === t.city); if (!city || t.date > bjDate(0).iso) return null;
+  const w = wx(city, t.date); if (!w) return null;
+  const hi = t.kind === "highest", ext = hi ? w.hi.t : w.lo.t, b = t.deg;
+  if (b == null || isNaN(b)) return null;
+  if (hi) {
+    if (t.tail === "higher") return ext >= b ? "Yes" : null;
+    return ext > b ? "No" : null;                       // 精确档 / “或以下”：最高已超过 → 不可能
+  }
+  if (t.tail === "below") return ext <= b ? "Yes" : null;
+  return ext < b ? "No" : null;                         // 精确档 / “或以上”：最低已低于 → 不可能
+}
+function markOf(t) {
+  if (t.status !== "open") return null;
+  const win = decidedSide(t);
+  if (win) return {locked: true, pnl: (win === t.side ? t.shares : 0) - t.stake - (t.fee || 0)};
+  const own = S.marks[t.side === "Yes" ? t.yes : t.no], opp = S.marks[t.side === "Yes" ? t.no : t.yes];
+  const bid = Math.max(own && own.bid != null ? own.bid : 0, opp && opp.ask != null ? 1 - opp.ask : 0);
+  if (!bid) return null;
+  return {locked: false, bid, pnl: t.shares * bid - t.stake - (t.fee || 0)};
+}
+async function loadMarks() {
+  const open = S.trades.filter(t => t.status === "open");
+  const toks = [...new Set(open.flatMap(t => [t.yes, t.no]).filter(Boolean))];
+  if (!toks.length) return;
+  try {
+    for (let i = 0; i < toks.length; i += 100) {
+      const res = await getJSON(`${CLOB}/books`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(toks.slice(i, i + 100).map(t => ({token_id: t})))});
+      for (const b of res || []) {
+        const bids = (b.bids || []).map(x => +x.price), asks = (b.asks || []).map(x => +x.price);
+        S.marks[b.asset_id] = {bid: bids.length ? Math.max(...bids) : null, ask: asks.length ? Math.min(...asks) : null};
+      }
+    }
+    S.marksTs = Date.now();
+  } catch (e) {}
+  if (S.view === "journal") renderJournal();
+}
+
+/* ===================== 跟单雷达 ===================== */
+/* 每 3 秒查一次目标账号的最新成交（公开接口，实测比成交晚约 3–4 秒）。发现新的买入：
+   提醒（震动 + 提示音 + 通知），并立刻按此刻盘口记一笔“自动纸面跟单”，用来测“机器速度”跟单的真实效果；
+   你也可以手动点“跟单”，记录的是你按下那一刻的盘口，用来测“人手速度”。只读，不下真实单。 */
+const TARGETS = [
+  {w: "0x9fb0c41fcd13554e2220fd3afa8a6b02b4443aa0", name: "0x9FB0", note: "全球气温盘，108 天每天交易，报文窗口 61/61"},
+  {w: "0x1bd1c05d0ec5256479ec8e1a83783edb9b4720bc", name: "0x8888B", note: "东亚气温盘，常在整点前下单，窗口 72/73"},
+];
+S.radar = {sigs: [], seen: new Set(), primed: {}, ts: 0, err: null, mk: {}};
+const RS = () => Object.assign({on: {"0x9FB0": true, "0x8888B": true}, auto: true, stake: 10, maxP: 0.97, winOnly: true}, S.settings.radar || {});
+/* 报文时段：整点 / 半点前 5 分钟 ~ 后 5 分钟（中国机场例行报文在 :00 和 :30）。这段时间外的买入是普通下注，不显示、不跟 */
+let inReportWin = ts => { const x = Math.floor(ts / 1000) % 1800; return x >= 1800 - 300 || x <= 300; };
+function saveRS(r) { S.settings.radar = r; store.set("wd.settings.v1", S.settings); }
+function slugInfo(eslug) {
+  const m = String(eslug || "").match(/^(highest|lowest)-temperature-in-(.+)-on-([a-z]+)-(\d+)-(\d{4})$/);
+  if (!m) return null;
+  const mi = MONTHS.indexOf(m[3]); if (mi < 0) return null;
+  const city = CITIES.find(c => c.slug === m[2]);
+  return {kind: m[1], city: city ? city.key : m[2].split("-").map(x => x[0].toUpperCase() + x.slice(1)).join(" "),
+          date: `${m[5]}-${String(mi + 1).padStart(2, "0")}-${String(+m[4]).padStart(2, "0")}`};
+}
+let audioCtx;
+function alertSig(sig) {
+  try { navigator.vibrate && navigator.vibrate([200, 80, 200]); } catch {}
+  try { audioCtx ||= new (window.AudioContext || window.webkitAudioContext)(); const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.frequency.value = 880; g.gain.value = 0.15; o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + 0.25); } catch {}
+  try { if (window.Notification && Notification.permission === "granted") new Notification(`${sig.who} 买入 ${sig.short}`, {body: `${sig.side} ${fmtP(sig.px)}，${Math.round(sig.size)} 份`, tag: sig.id}); } catch {}
+}
+async function radarMarket(cond) {
+  if (S.radar.mk[cond]) return S.radar.mk[cond];
+  const arr = await getJSON(`${GAMMA}/markets?condition_ids=${cond}`).catch(() => null);
+  let m = arr && arr[0];
+  if (!m) { const a2 = await getJSON(`${GAMMA}/markets?closed=true&condition_ids=${cond}`).catch(() => null); m = a2 && a2[0]; }
+  if (!m) return null;
+  let toks = []; try { toks = JSON.parse(m.clobTokenIds); } catch {}
+  const b = parseBucket(m.groupItemTitle) || {};
+  return S.radar.mk[cond] = {yes: toks[0], no: toks[1], title: m.groupItemTitle, deg: b.deg, tail: b.tail || "", closed: !!m.closed,
+    fee: (m.feeSchedule && m.feeSchedule.rate != null) ? m.feeSchedule.rate : DEFAULT_FEE};
+}
+async function radarBooks(list) {
+  const toks = [...new Set(list.flatMap(x => [x.yes, x.no]).filter(Boolean))]; if (!toks.length) return;
+  const res = await getJSON(`${CLOB}/books`, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(toks.map(t => ({token_id: t})))});
+  for (const b of res || []) S.books[b.asset_id] = {bids: (b.bids || []).map(x => ({p: +x.price, s: +x.size})), asks: (b.asks || []).map(x => ({p: +x.price, s: +x.size}))};
+  for (const x of list) { const lad = ladder(x, x.side, "buy"); x.ask = lad && lad.length ? lad[0].p : null; x.askTs = Date.now(); }
+}
+function copyTrade(sig, mode) {
+  const r = RS(), lad = ladder(sig, sig.side, "buy");
+  const f = walk(lad, r.stake, "usd");
+  if (!f.avg || f.shares <= 0) return null;
+  const fee = f.shares * (sig.fee ?? DEFAULT_FEE) * f.avg * (1 - f.avg);
+  const info = slugInfo(sig.eslug) || {};
+  const t = {id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ts: Date.now(),
+    city: info.city || "?", kind: info.kind || "highest", date: info.date || "", slug: sig.eslug, bucket: sig.title, deg: sig.deg, tail: sig.tail,
+    cond: sig.cond, yes: sig.yes, no: sig.no, side: sig.side, stake: f.usd, shares: f.shares, avg: f.avg, fee, feeRate: sig.fee, best: lad[0].p,
+    temp: null, ext: null, state: mode === "auto" ? "跟单·自动" : "跟单·手动", reason: `跟 ${sig.who} ${sig.side} ${fmtP(sig.px)}，晚 ${Math.round((Date.now() - sig.ts) / 1000)} 秒`,
+    copyOf: sig.who, theirPx: sig.px, lagMs: Date.now() - sig.ts, status: "open"};
+  S.trades.unshift(t); saveTrades(); return t;
+}
+async function pollRadar() {
+  const r = RS(), targets = TARGETS.filter(x => r.on[x.name]);
+  if (!targets.length) return;
+  try {
+    const res = await Promise.all(targets.map(x => getJSON(`${DATA}/activity?user=${x.w}&type=TRADE&limit=15&_=${Date.now()}`).then(j => [x, j.data || []])));
+    const fresh = [];
+    for (const [x, rows] of res) {
+      for (const a of rows) {
+        const id = (a.transaction_hash || "") + (a.token_id || "") + a.size;
+        if (S.radar.seen.has(id)) continue;
+        S.radar.seen.add(id);
+        const info = slugInfo(a.event_slug); if (!info) continue;       // 只看气温盘
+        const buy = a.side === "BUY";
+        const sig = {id, who: x.name, ts: a.timestamp * 1000, seenTs: Date.now(), cond: (a.condition_id || "").toLowerCase(), eslug: a.event_slug,
+          side: buy ? a.outcome : (a.outcome === "Yes" ? "No" : "Yes"), px: buy ? a.price : 1 - a.price, size: a.size, buy, raw: a, win: inReportWin(a.timestamp * 1000),
+          short: `${cityZh(info.city)} ${info.kind === "highest" ? "最高" : "最低"} ${String(a.title || "").match(/(-?\d+°C(?: or (?:higher|below))?)/)?.[1] || ""}`, history: !S.radar.primed[x.name]};
+        S.radar.sigs.unshift(sig); if (!sig.history) fresh.push(sig);
+      }
+      S.radar.primed[x.name] = true;
+    }
+    S.radar.sigs.sort((a, b) => b.ts - a.ts); S.radar.sigs = S.radar.sigs.slice(0, 60);
+    for (const sig of fresh) {
+      const m = await radarMarket(sig.cond); if (!m) continue;
+      Object.assign(sig, m, {title: m.title});
+      if (!sig.buy) continue;                                         // 卖出 = 对方平仓，只提示不跟
+      if (r.winOnly && !sig.win) { sig.autoSkip = "不在报文时段，不跟"; continue; }
+      try { await radarBooks([sig]); } catch {}
+      alertSig(sig);
+      if (r.auto && sig.ask != null && sig.ask <= r.maxP && Date.now() - sig.ts < 60e3) { const t = copyTrade(sig, "auto"); if (t) sig.auto = t; }
+      else sig.autoSkip = sig.ask == null ? "盘口没有卖单" : sig.ask > r.maxP ? `卖价 ${fmtP(sig.ask)} 高于上限` : "发现太晚";
+    }
+    for (const sig of S.radar.sigs.filter(x => x.history && !x.yes).slice(0, 15)) { const m = await radarMarket(sig.cond); if (m) Object.assign(sig, m, {title: m.title}); }
+    S.radar.ts = Date.now(); S.radar.err = null;
+  } catch (e) { S.radar.err = "跟单雷达获取失败"; }
+  if (S.view === "radar") renderRadar();
+}
+async function refreshRadarBooks() {
+  const live = S.radar.sigs.filter(x => x.buy && x.yes && !x.closed && Date.now() - x.ts < 3600e3).slice(0, 10);
+  if (!live.length) return;
+  try { await radarBooks(live); } catch {}
+  if (S.view === "radar") renderRadar();
+}
+function renderRadar() {
+  const r = RS(), copies = S.trades.filter(t => t.copyOf);
+  const sum = mode => {
+    const xs = copies.filter(t => t.state === (mode === "auto" ? "跟单·自动" : "跟单·手动"));
+    let pnl = 0, cost = 0, done = 0, lag = [];
+    for (const t of xs) { const v = t.status !== "open" ? t.pnl : (markOf(t) || {}).pnl; if (v != null) { pnl += v; cost += t.stake; done++; } if (t.lagMs) lag.push(t.lagMs / 1000); }
+    lag.sort((a, b) => a - b);
+    return {n: xs.length, pnl, roi: cost ? pnl / cost : null, lag: lag.length ? lag[Math.floor(lag.length / 2)] : null, done};
+  };
+  const A = sum("auto"), M = sum("manual");
+  const shown = r.winOnly ? S.radar.sigs.filter(x => x.buy && x.win) : S.radar.sigs;
+  const sigs = shown.slice(0, 30).map(x => {
+    const age = Math.round((Date.now() - x.ts) / 1000), freshCls = !x.history && age < 120 && (x.win || !r.winOnly || !x.buy) ? "fresh" : "";
+    const gap = x.ask != null ? x.ask - x.px : null;
+    return `<div class="sig ${freshCls}" ${x.buy && r.winOnly && !x.win ? 'style="opacity:.55"' : ""}><div><div class="t">${esc(x.who)} ${x.buy ? "买入" : "卖出（平仓）"} ${esc(x.short)} <span class="pill ${(x.buy ? x.side : x.raw.outcome) === "Yes" ? "yes" : "no"}">${x.buy ? x.side : x.raw.outcome}</span></div>
+      <div class="m">成交 ${hhmm(x.ts)}:${String(bj(x.ts).s).padStart(2, "0")} · 价 ${fmtP(x.buy ? x.px : x.raw.price)} · ${Math.round(x.size)} 份${x.history ? " · 开页前的记录" : ` · 发现晚 ${Math.round((x.seenTs - x.ts) / 1000)} 秒`}</div>
+      ${x.auto ? `<div class="m">已自动纸面跟单：${fmtP(x.auto.avg)}，${fmtUsd(x.auto.stake)}</div>` : x.autoSkip && x.buy ? `<div class="m">未自动跟：${esc(x.autoSkip)}</div>` : ""}</div>
+      <div class="r">${x.buy && r.winOnly && !x.win ? `<span class="pill">非报文时段</span>` : x.buy && x.yes && !x.closed ? `<div class="num">${x.ask == null ? "—" : fmtP(x.ask)}</div><div class="m">${x.ask == null ? (x.askTs ? "没有卖单" : "加载盘口") : "现在卖价"}${gap != null ? `（${gap >= 0 ? "+" : ""}${Math.round(gap * 1000) / 10}¢）` : ""}</div>
+        <button class="btn pri" data-copy="${esc(x.id)}" ${x.ask == null || x.ask >= 0.999 ? "disabled" : ""}>跟单 $${r.stake}</button>` : x.closed ? `<span class="pill">已结算</span>` : ""}</div></div>`;
+  }).join("");
+  const hidden = document.hidden ? "" : "";
+  $("#view-radar").innerHTML = `
+    <div class="note" style="margin-bottom:10px">盯住报文狙击账号，每 3 秒查一次，只显示他们在报文时段（整点、半点前后各 5 分钟）的买入，发现就提醒并记一笔纸面单。<b>页面要保持打开、亮屏</b>：手机切到后台后浏览器会降速，可能晚几十秒。只记纸面单，不会真的下单。</div>
+    <div class="stats">
+      <div class="stat"><b class="${A.pnl >= 0 ? "pos" : "neg"}">${fmtUsd(A.pnl, true)}</b><span>自动跟单 ${A.n} 笔（中位晚 ${A.lag == null ? "—" : A.lag.toFixed(0) + " 秒"}）</span></div>
+      <div class="stat"><b>${A.roi == null ? "—" : pct(A.roi, true)}</b><span>自动跟单收益率</span></div>
+      <div class="stat"><b class="${M.pnl >= 0 ? "pos" : "neg"}">${fmtUsd(M.pnl, true)}</b><span>手动跟单 ${M.n} 笔（中位晚 ${M.lag == null ? "—" : M.lag.toFixed(0) + " 秒"}）</span></div>
+      <div class="stat"><b>${M.roi == null ? "—" : pct(M.roi, true)}</b><span>手动跟单收益率</span></div>
+    </div>
+    <div class="small muted" style="margin:-6px 0 10px">盈亏含未结算的估值（报文已判定的按输赢，其余按现在卖出价）。明细在“纸面记录”页，分组里的“跟单·自动 / 跟单·手动”。雷达 ${S.radar.err ? esc(S.radar.err) : ago(S.radar.ts)}。</div>
+    <div class="card"><h3>${r.winOnly ? "报文时段的买入" : "最新动态"}</h3>${sigs || `<div class="muted">${S.radar.ts ? (r.winOnly ? "最近没有报文时段（整点、半点前后 5 分钟）的买入" : "最近没有成交") : "加载中…"}</div>`}</div>
+    <div class="card" style="margin-top:12px"><h3>设置</h3>
+      ${TARGETS.map(x => `<label class="tog"><input type="checkbox" data-rt="${x.name}" ${r.on[x.name] ? "checked" : ""}> <b>${x.name}</b> <span class="small muted">${x.note}</span></label>`).join("")}
+      <label class="tog"><input type="checkbox" id="r-win" ${r.winOnly ? "checked" : ""}> 只显示报文时段的买入（整点、半点前后各 5 分钟），其他时间的买入和所有卖出都不显示、不提醒、不跟</label>
+      <label class="tog"><input type="checkbox" id="r-auto" ${r.auto ? "checked" : ""}> 发现买入时自动记一笔纸面跟单</label>
+      <label class="tog">每笔金额 $<input type="number" id="r-stake" min="1" step="1" value="${r.stake}"></label>
+      <label class="tog">卖价高于 <input type="number" id="r-maxp" min="50" max="99.9" step="0.5" value="${(r.maxP * 100).toFixed(1)}">¢ 不自动跟</label>
+      <div class="actions" style="justify-content:flex-start"><button class="btn" id="r-notify">开启系统通知</button>
+        <span class="small muted">${window.Notification ? "通知权限：" + ({granted: "已开启", denied: "已拒绝", default: "未设置"})[Notification.permission] : "这个浏览器不支持通知"}</span></div>
+    </div>`;
+}
+setInterval(() => { if (!document.hidden) pollRadar(); }, 3000);
+setInterval(() => { if (!document.hidden && S.view === "radar") refreshRadarBooks(); }, 4000);
+setInterval(() => { if (!document.hidden && S.view === "radar") loadMarks(); }, 30e3);
+pollRadar();
+
 /* ===================== 渲染：纸面记录 ===================== */
 function summarize(list) {
   const done = list.filter(t => t.status !== "open");
@@ -658,6 +880,9 @@ function groupTable(title, keyFn) {
 }
 function renderJournal() {
   const s = summarize(S.trades);
+  const marks = S.trades.filter(t => t.status === "open").map(markOf).filter(Boolean);
+  const lockedPnl = marks.filter(m => m.locked).reduce((a, m) => a + m.pnl, 0), floatPnl = marks.filter(m => !m.locked).reduce((a, m) => a + m.pnl, 0);
+  const nOpen = S.trades.filter(t => t.status === "open").length;
   const list = S.trades.map(t => {
     const res = t.status === "open" ? `<span class="pill">持有中</span> <button class="btn" data-close="${t.id}">平仓</button>`
       : t.status === "closed" ? `<span class="pill">已平仓 ${fmtP(t.exitAvg)}</span>` : (t.payout === 1 ? `<span class="pill yes">赢</span>` : `<span class="pill no">输</span>`);
@@ -665,7 +890,12 @@ function renderJournal() {
     return `<tr><td><b>${cityZh(t.city)} ${t.kind === "highest" ? "最高" : "最低"} ${esc(t.bucket)}</b> <span class="pill ${t.side === "Yes" ? "yes" : "no"}">${t.side}</span>
         <span class="sub">${t.date} · 下单 ${hhmm(t.ts)} · 当时 ${t.temp ?? "—"}°C · ${esc(t.state)}${t.reason ? " · " + esc(t.reason) : ""}${ws.length ? ` · windy 同档买 ${ws.length} 笔` : ""}</span></td>
       <td class="num">${fmtP(t.avg)}<span class="sub">${fmtUsd(t.stake)}</span></td>
-      <td class="num ${t.pnl > 0 ? "pos" : t.pnl < 0 ? "neg" : ""}">${t.status === "open" ? "—" : fmtUsd(t.pnl, true)}</td>
+      ${(() => {
+        if (t.status !== "open") return `<td class="num ${t.pnl > 0 ? "pos" : t.pnl < 0 ? "neg" : ""}">${fmtUsd(t.pnl, true)}</td>`;
+        const mk = markOf(t);
+        if (!mk) return `<td class="num muted">—<span class="sub">等待盘口</span></td>`;
+        return `<td class="num ${mk.pnl > 0 ? "pos" : mk.pnl < 0 ? "neg" : ""}">${fmtUsd(mk.pnl, true)}<span class="sub">${mk.locked ? (mk.pnl > 0 ? "已锁定赢" : "已锁定输") : "浮动 · 卖价 " + fmtP(mk.bid)}</span></td>`;
+      })()}
       <td>${res} <button class="btn" data-del="${t.id}" aria-label="删除这条记录">删除</button></td></tr>`;
   }).join("");
   const hourKey = t => { const h = bj(t.ts).h; return h < 11 ? "11 点前" : h < 13 ? "11–13 点" : h < 16 ? "13–16 点" : "16 点后"; };
@@ -677,6 +907,12 @@ function renderJournal() {
       <div class="stat"><b>${pct(s.roi, true)}</b><span>收益率</span></div>
       <div class="stat"><b>${s.avgP == null ? "—" : fmtP(s.avgP)}</b><span>平均买入价</span></div>
     </div>
+    ${nOpen ? `<div class="stats" style="margin-top:8px">
+      <div class="stat"><b class="${lockedPnl >= 0 ? "pos" : "neg"}">${fmtUsd(lockedPnl, true)}</b><span>已锁定（${marks.filter(m => m.locked).length} 笔，报文已判定）</span></div>
+      <div class="stat"><b class="${floatPnl >= 0 ? "pos" : "neg"}">${fmtUsd(floatPnl, true)}</b><span>浮动（${marks.filter(m => !m.locked).length} 笔，按现在卖出价）</span></div>
+      <div class="stat"><b class="${lockedPnl + floatPnl >= 0 ? "pos" : "neg"}">${fmtUsd(lockedPnl + floatPnl, true)}</b><span>未结算合计</span></div>
+    </div>
+    <div class="small muted" style="margin:6px 0 10px">未结算的单：机场报文已经判定输赢的算“已锁定”；还没判定的按此刻盘口能卖出的最好价格估算（不含卖出手续费）。正式盈亏以 Polymarket 结算为准，通常在次日凌晨之后。盘口 ${ago(S.marksTs)}更新。</div>` : ""}
     ${S.trades.length ? `<div class="card"><h3>全部纸面单</h3><div class="tablewrap"><table><thead><tr><th>市场 · 详情</th><th>均价/金额</th><th>盈亏</th><th>操作</th></tr></thead><tbody>${list}</tbody></table></div></div>
       <div class="two" style="margin-top:12px">${groupTable("按下单时状态", t => t.state)}${groupTable("按城市", t => cityZh(t.city))}</div>
       <div class="two" style="margin-top:12px">${groupTable("按下单时段（北京时间）", hourKey)}${groupTable("按方向", t => (t.kind === "highest" ? "最高温 " : "最低温 ") + t.side)}</div>`
@@ -685,7 +921,12 @@ function renderJournal() {
       <div class="small muted">记录只存在这台设备的浏览器里。换设备或清理浏览器前先导出。</div>
       <div class="actions" style="justify-content:flex-start"><button class="btn" id="export">导出 JSON</button>
         <label class="btn" for="import-file">导入 JSON</label><input id="import-file" type="file" accept="application/json,.json" hidden>
-        <button class="btn" id="settle-now">立即检查结算</button></div></div>`;
+        <button class="btn" id="settle-now">立即检查结算</button></div></div>
+    <div class="card" style="margin-top:12px"><h3>报文加速（可选）</h3>
+      <div class="small muted">默认数据源比报文时间晚约 11 分钟。填入你自己部署的 Cloudflare Worker 地址后，最新一报改从 NOAA 读取，晚约 5 分钟。留空则不使用。</div>
+      <div class="field" style="margin-top:8px"><input id="proxy-url" type="url" inputmode="url" placeholder="https://xxx.workers.dev" value="${esc(S.settings.proxy || "")}" style="width:100%"></div>
+      <div class="actions" style="justify-content:flex-start"><button class="btn pri" id="proxy-save">保存并测试</button>
+        <span class="small muted">${S.settings.proxy ? (S.fastErr ? "当前：" + S.fastErr : S.fastTs ? "当前：正常，" + ago(S.fastTs) + "更新" : "当前：等待首次读取") : "当前：未启用"}</span></div></div>`;
 }
 
 /* ===================== 复制盘面 ===================== */
@@ -704,14 +945,16 @@ function boardText() {
 /* ===================== 事件 ===================== */
 function setView(v) {
   S.view = v;
-  for (const id of ["overview", "city", "journal"]) { $("#view-" + id).hidden = id !== v; $("#tab-" + id).setAttribute("aria-current", id === v); }
+  for (const id of ["overview", "city", "journal", "radar"]) { $("#view-" + id).hidden = id !== v; $("#tab-" + id).setAttribute("aria-current", id === v); }
   if (v === "city") { loadEvents().then(loadBooks); }
+  if (v === "journal" || v === "radar") loadMarks();
   render(); window.scrollTo(0, 0);
 }
 function render() {
   renderStatus();
   if (S.view === "overview") renderOverview();
   else if (S.view === "city") renderCity();
+  else if (S.view === "radar") renderRadar();
   else renderJournal();
 }
 document.addEventListener("click", e => {
@@ -741,10 +984,27 @@ document.addEventListener("click", e => {
     const blob = new Blob([JSON.stringify({version: 1, exported: new Date().toISOString(), trades: S.trades}, null, 1)], {type: "application/json"});
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `weather-desk-${bjDate(0).iso}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   }
+  if (el.dataset.copy) {
+    const sig = S.radar.sigs.find(x => x.id === el.dataset.copy); if (!sig) return;
+    const t = copyTrade(sig, "manual"); toast(t ? `已纸面跟单 ${fmtP(t.avg)}，晚 ${Math.round(t.lagMs / 1000)} 秒` : "没有可成交的卖单"); return renderRadar();
+  }
+  if (el.id === "r-notify") { if (window.Notification) Notification.requestPermission().then(() => renderRadar()); return; }
+  if (el.id === "proxy-save") {
+    const v = $("#proxy-url").value.trim().replace(/\/+$/, "");
+    if (v && !/^https:\/\//.test(v)) return toast("地址要以 https:// 开头");
+    S.settings.proxy = v; store.set("wd.settings.v1", S.settings); S.fast = {}; S.fastTs = 0; S.fastErr = null;
+    if (v) loadFast(true).then(() => { if (S.view === "journal") renderJournal(); }); else { toast("已关闭报文加速"); renderJournal(); renderStatus(); }
+  }
   if (el.id === "settle-now") { settleTrades().then(() => toast("结算检查完成")); }
 });
 document.addEventListener("click", e => { if (S.bookSheet && e.target.id === "sheet-bg") closeSheet(); });
 document.addEventListener("change", e => {
+  const r = RS(), el = e.target;
+  if (el.dataset && el.dataset.rt) { r.on[el.dataset.rt] = el.checked; saveRS(r); return; }
+  if (el.id === "r-auto") { r.auto = el.checked; saveRS(r); return; }
+  if (el.id === "r-win") { r.winOnly = el.checked; saveRS(r); return renderRadar(); }
+  if (el.id === "r-stake") { r.stake = Math.max(1, Math.round(+el.value || 10)); saveRS(r); return renderRadar(); }
+  if (el.id === "r-maxp") { r.maxP = Math.min(0.999, Math.max(0.5, (+el.value || 97) / 100)); saveRS(r); return renderRadar(); }
   if (e.target.id !== "import-file" || !e.target.files[0]) return;
   e.target.files[0].text().then(txt => {
     const j = JSON.parse(txt); const add = (j.trades || []).filter(t => t.id && !S.trades.some(x => x.id === t.id));
@@ -754,14 +1014,16 @@ document.addEventListener("change", e => {
 
 /* ===================== 刷新节奏 ===================== */
 function every(ms, fn) { fn(); return setInterval(() => { if (!document.hidden) fn(); }, ms); }
-document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadMetar(); loadEvents(); loadWindy(); if (S.view === "city") loadBooks(); } });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadMetar(); loadFast(); loadEvents(); loadWindy(); if (S.view === "city") loadBooks(); } });
 setInterval(tick, 1000); tick();
-for (const id of ["overview", "city", "journal"]) { $("#view-" + id).hidden = id !== S.view; }
+for (const id of ["overview", "city", "journal", "radar"]) { $("#view-" + id).hidden = id !== S.view; }
 every(120e3, loadMetar);
+every(20e3, () => loadFast());
 every(60e3, () => loadEvents());
 every(60e3, loadWindy);
 setInterval(() => { if (!document.hidden && S.view === "city") loadBooks(); }, 4000);
 every(300e3, settleTrades);
+setInterval(() => { if (!document.hidden && S.view === "journal") loadMarks(); }, 30e3);
 render();
 </script>
 </body>
